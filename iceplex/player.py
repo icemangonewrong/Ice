@@ -1455,6 +1455,10 @@ class PlayerPage(QWidget):
                       self.error_box):
                 w.raise_()
             self._place_floating()
+        if self.mode == "mini":
+            # The picture sits on top of the bar in the mini player (so it's clickable and not dimmed).
+            self.video.raise_()
+            self.spinner.raise_()
         self.unsetCursor()
         self.video.unsetCursor()
         self.hide_timer.start(self.HIDE_AFTER_MS)
