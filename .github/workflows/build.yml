@@ -1,0 +1,83 @@
+name: Build IcePlex for Windows
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller==6.22.3
+
+      # The video engine (mpv) for Windows, from the standard mpv Windows builds.
+      - name: Download libmpv
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = "shinchiro/mpv-winbuild-cmake"
+          $releases = gh release list --repo $repo --limit 20 --json tagName | ConvertFrom-Json
+          $found = $null
+          foreach ($r in $releases) {
+            $assets = (gh release view $r.tagName --repo $repo --json assets | ConvertFrom-Json).assets
+            $match = $assets | Where-Object { $_.name -match '^mpv-dev-x86_64-\d{8}-git-[0-9a-f]+\.7z$' } | Select-Object -First 1
+            if ($match) { $found = @{ tag = $r.tagName; name = $match.name }; break }
+          }
+          if (-not $found) {
+            Write-Host "Assets in the newest release:"
+            (gh release view $releases[0].tagName --repo $repo --json assets | ConvertFrom-Json).assets | ForEach-Object { Write-Host "  $($_.name)" }
+            throw "Couldn't find a libmpv download"
+          }
+          Write-Host "Using $($found.name) from release $($found.tag)"
+          gh release download $found.tag --repo $repo --pattern $found.name --dir mpvdl
+          7z x "mpvdl/$($found.name)" -ompv -y | Out-Null
+          $dll = Get-ChildItem mpv -Recurse -Filter libmpv-2.dll | Select-Object -First 1
+          if (-not $dll) { Get-ChildItem mpv -Recurse | ForEach-Object { Write-Host $_.FullName }; throw "libmpv-2.dll not in archive" }
+          Copy-Item $dll.FullName .\libmpv-2.dll
+
+      - name: Build IcePlex.exe
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name IcePlex
+          --icon assets/icon.ico
+          --add-data "assets;assets"
+          --add-binary "libmpv-2.dll;."
+          --collect-submodules iceplex
+          main.py
+
+      - name: Check the build
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist/IcePlex/IcePlex.exe)) { throw "IcePlex.exe missing" }
+          $dll = Get-ChildItem dist/IcePlex -Recurse -Filter libmpv-2.dll | Select-Object -First 1
+          if (-not $dll) { throw "libmpv-2.dll missing from build" }
+          Write-Host "OK: $((Get-ChildItem dist/IcePlex -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB) MB"
+
+      - name: Zip it
+        shell: pwsh
+        run: Compress-Archive -Path dist/IcePlex -DestinationPath dist/IcePlex-Windows.zip
+
+      - name: Make installer
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc installer\IcePlex.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IcePlex-Windows
+          path: |
+            dist/IcePlex-Setup.exe
+            dist/IcePlex-Windows.zip
+          if-no-files-found: warn
