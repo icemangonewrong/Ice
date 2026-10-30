@@ -7,7 +7,7 @@ from typing import Optional
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+                               QProgressBar, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from . import theme
 from .config import BUFFER_CHOICES
@@ -75,7 +75,7 @@ class SignInPage(QWidget):
             logo.setPixmap(rounded(pix, 140, 140, 30, self.devicePixelRatioF()))
         logo.setAlignment(Qt.AlignCenter)
         v.addWidget(logo)
-        t = label("IcePlex", "H1")
+        t = label("Ice", "H1")
         t.setAlignment(Qt.AlignCenter)
         v.addWidget(t)
         self.info = label("Sign in with your Plex account. Your browser will open — approve the sign-in, "
@@ -541,6 +541,27 @@ class SettingsPage(ScrollPage):
         b.clicked.connect(self.ctx.forget_server)
         self.body.addWidget(b, 0, Qt.AlignLeft)
 
+        self.section("Accent color", "Used for buttons, progress bars, the loading circle and highlights.")
+        sw = QHBoxLayout()
+        sw.setSpacing(10)
+        cur = (s["accent"] or theme.ACCENTS[0][1]).lower()
+        for name, color in theme.ACCENTS:
+            b = QToolButton()
+            b.setFixedSize(38, 38)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(name)
+            on = color.lower() == cur
+            hover = "white" if on else "rgba(255,255,255,0.55)"
+            b.setStyleSheet(f"QToolButton {{ background: {color}; border-radius: 19px;"
+                            f" border: 3px solid {'white' if on else 'transparent'}; }}"
+                            f"QToolButton:hover {{ border-color: {hover}; }}")
+            b.clicked.connect(lambda _=False, c=color: self._set_accent(c))
+            sw.addWidget(b)
+        sw.addSpacing(10)
+        sw.addWidget(label(next((n for n, c in theme.ACCENTS if c.lower() == cur), "Custom"), "Muted"))
+        sw.addStretch()
+        self.body.addLayout(sw)
+
         self.section("Libraries", "Hidden libraries are left out of Home, Continue Watching, Libraries and Search.")
         excluded = set(s["excludedSections"] or [])
         if not self.ctx.sections:
@@ -596,7 +617,7 @@ class SettingsPage(ScrollPage):
         keys = [("Space / K", "Play / pause"), ("← / J", "Back 10 seconds"), ("→ / L", "Forward 10 seconds"),
                 ("Shift+N", "Next episode"), ("Shift+P", "Restart / previous episode"), ("S", "Skip intro / credits"),
                 ("↑ / ↓", "Volume"), ("M", "Mute"), ("F / double-click", "Full screen"),
-                ("Esc", "Leave full screen / close player")]
+                ("Esc", "Pause and minimize the player")]
         g = QGridLayout()
         g.setHorizontalSpacing(24)
         for i, (k, d) in enumerate(keys):
@@ -631,6 +652,10 @@ class SettingsPage(ScrollPage):
         d.pop(dev, None)
         self.ctx.settings["audioDelays"] = d
         self.refresh()
+
+    def _set_accent(self, color):
+        self.ctx.set_accent(color)
+        QTimer.singleShot(0, self.refresh)
 
     def _set_buffer(self, minutes):
         self.ctx.settings["bufferMinutes"] = minutes

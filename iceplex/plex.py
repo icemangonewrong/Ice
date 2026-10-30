@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 import requests
 
-PRODUCT = "IcePlex"
+PRODUCT = "Ice"
 VERSION = "1.0"
 
 
@@ -175,7 +175,7 @@ class PlexClient:
             "X-Plex-Version": VERSION,
             "X-Plex-Platform": "Windows",
             "X-Plex-Device": "PC",
-            "X-Plex-Device-Name": "IcePlex (Windows)",
+            "X-Plex-Device-Name": "Ice (Windows)",
         }
         if token:
             h["X-Plex-Token"] = token

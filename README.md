@@ -1,13 +1,13 @@
-# IcePlex for Windows
+# Ice for Windows
 
 A Plex player for Windows with true direct play (MKV and everything else, no server transcoding),
 Continue Watching, library hiding, info pages, progress sync, and a disk buffer that rides out
 dropped connections.
 
 ## Build
-Push to GitHub. The **Build IcePlex for Windows** workflow produces an artifact with:
-- `IcePlex-Setup.exe`: installer (per-user, no admin needed)
-- `IcePlex-Windows.zip`: portable folder; extract and run `IcePlex.exe`
+Push to GitHub. The **Build Ice for Windows** workflow publishes a GitHub Release with:
+- `Ice-Setup.exe`: installer (per-user, no admin needed)
+- `Ice-Windows.zip`: portable folder; extract and run `Ice.exe`
 
 ## Player keys
 | Key | Action |
@@ -17,6 +17,6 @@ Push to GitHub. The **Build IcePlex for Windows** workflow produces an artifact 
 | ↑ / ↓, mouse wheel | Volume |
 | M | Mute |
 | F / double-click | Full screen |
-| Esc | Leave full screen / close player |
+| Esc | Pause and minimize to the mini player |
 
-Settings live in `%APPDATA%\IcePlex\settings.json`.
+Settings live in `%APPDATA%\Ice\settings.json`.

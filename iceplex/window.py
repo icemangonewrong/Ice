@@ -1,6 +1,7 @@
 """Main window: sidebar, page navigation, and the player."""
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QSize, Qt, Signal
@@ -12,7 +13,7 @@ from . import theme
 from .config import Settings
 from .pages import (HomePage, LibrariesPage, SearchPage, ServerPage, SettingsPage, SignInPage, detail_page,
                     resource_path)
-from .player import PlayerPage
+from .player import MINI_H, PlayerPage
 from .plex import Item, PlexClient
 from .widgets import label
 
@@ -76,6 +77,10 @@ class Context(QObject):
     def play(self, item: Item, from_start: bool = False):
         self.window.play(item, from_start)
 
+    def set_accent(self, color: str):
+        self.settings["accent"] = color
+        self.window.apply_accent()
+
 
 class NavButton(QPushButton):
     def __init__(self, text, icon_name):
@@ -98,14 +103,19 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IcePlex")
+        self.setWindowTitle("Ice")
         self.setWindowIcon(QIcon(resource_path("icon.ico")))
         self.setMinimumSize(980, 640)
         self.ctx = Context(self)
         self.ctx.data_changed.connect(self._data_changed)
+        theme.set_accent(self.ctx.settings["accent"])
+        QApplication.instance().setStyleSheet(theme.full_stylesheet(os.path.dirname(resource_path("check.png"))))
 
-        self.outer = QStackedWidget()          # [setup pages | main ui | player]
-        self.setCentralWidget(self.outer)
+        # The player sits on top of everything: full window when watching, or a strip along the bottom
+        # (the mini player) after pressing back / Esc.
+        self.root_box = QWidget()
+        self.setCentralWidget(self.root_box)
+        self.outer = QStackedWidget(self.root_box)   # [setup pages | main ui]
 
         # Main UI: sidebar + content stack
         self.main = QWidget()
@@ -125,7 +135,7 @@ class MainWindow(QMainWindow):
         if not pix.isNull():
             logo.setPixmap(pix.scaled(34, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         brand.addWidget(logo)
-        name = label("IcePlex", "H2")
+        name = label("Ice", "H2")
         brand.addWidget(name)
         brand.addStretch()
         sv.addLayout(brand)
@@ -162,16 +172,19 @@ class MainWindow(QMainWindow):
         self.back_btn.hide()
         h.addWidget(content, 1)
 
-        self.player = PlayerPage(self.ctx)
+        self.main_layout = h
+        self.player = PlayerPage(self.ctx, self.root_box)
         self.player.closed.connect(self._player_closed)
         self.player.toggle_fullscreen.connect(self.toggle_fullscreen)
+        self.player.mode_changed.connect(self._player_mode)
+        self.player.hide()
 
         self.setup_holder = QWidget()
         QVBoxLayout(self.setup_holder).setContentsMargins(0, 0, 0, 0)
 
         self.outer.addWidget(self.setup_holder)
         self.outer.addWidget(self.main)
-        self.outer.addWidget(self.player)
+        self.root_box.installEventFilter(self)
 
         self.history: list[QWidget] = []
         self.tab_roots: dict[int, QWidget] = {}
@@ -246,7 +259,7 @@ class MainWindow(QMainWindow):
         self._update_back()
 
     def back(self):
-        if self.outer.currentWidget() is not self.main or not self.history:
+        if self.outer.currentWidget() is not self.main or not self.history or self.player_covering():
             return
         page = self.history.pop()
         self.stack.removeWidget(page)
@@ -279,15 +292,61 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ player
 
+    def player_covering(self) -> bool:
+        """The full-window player is showing."""
+        return self.player.isVisible() and self.player.mode == "full"
+
     def play(self, item: Item, from_start: bool = False):
-        self.outer.setCurrentWidget(self.player)
+        self.player.show()
+        self.player.raise_()
+        if self.player.mode != "full":
+            self.player.set_mode("full")
+        self._place_player()
         self.player.start(item, from_start)
+
+    def _place_player(self):
+        r = self.root_box.rect()
+        self.outer.setGeometry(r)
+        mini = self.player.isVisible() and self.player.mode == "mini"
+        total = MINI_H + 11
+        self.main_layout.setContentsMargins(0, 0, 0, MINI_H if mini else 0)
+        if not self.player.isVisible():
+            return
+        if mini:
+            self.player.setGeometry(0, r.height() - total, r.width(), total)
+        else:
+            self.player.setGeometry(r)
+        self.player.raise_()
+
+    def _player_mode(self, mode):
+        if mode == "mini":
+            if self._fs_by_player and self.isFullScreen():
+                self.toggle_fullscreen()
+            page = self.current_page()
+            if page is not None:
+                page.setFocus()
+        self._place_player()
 
     def _player_closed(self):
         if self._fs_by_player and self.isFullScreen():
             self.toggle_fullscreen()
-        self.outer.setCurrentWidget(self.main)
+        self.player.hide()
+        self._place_player()
         self.player.set_fullscreen_icon(self.isFullScreen())
+
+    def apply_accent(self):
+        """Accent color changed in Settings: restyle everything."""
+        theme.set_accent(self.ctx.settings["accent"])
+        QApplication.instance().setStyleSheet(theme.full_stylesheet(os.path.dirname(resource_path("check.png"))))
+        for b in self.nav_buttons:
+            b._recolor(b.isChecked())
+        self.player.restyle()
+        # Rebuild the other tabs next time they're opened so everything picks up the new color.
+        for i in [i for i in self.tab_roots if i != self.current_tab]:
+            w = self.tab_roots.pop(i)
+            self.stack.removeWidget(w)
+            w.deleteLater()
+        self.update()
 
     def toggle_fullscreen(self):
         if self.isFullScreen():
@@ -298,7 +357,7 @@ class MainWindow(QMainWindow):
                 self.showNormal()
         else:
             self._was_maximized = self.isMaximized()
-            self._fs_by_player = self.outer.currentWidget() is self.player
+            self._fs_by_player = self.player_covering()
             self.showFullScreen()
         self.player.set_fullscreen_icon(self.isFullScreen())
 
@@ -306,10 +365,17 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, e):
         t = e.type()
+        if obj is self.root_box and t == QEvent.Resize:
+            self._place_player()
+            return False
         if t == QEvent.MouseButtonRelease and e.button() == Qt.BackButton:
-            self.back()
+            if self.player_covering():
+                self.player.minimize()
+            else:
+                self.back()
             return True
-        if t == QEvent.KeyPress and e.key() == Qt.Key_Backspace and self.outer.currentWidget() is self.main:
+        if t == QEvent.KeyPress and e.key() == Qt.Key_Backspace and self.outer.currentWidget() is self.main \
+                and not self.player_covering():
             if not isinstance(QApplication.focusWidget(), QLineEdit):
                 self.back()
                 return True

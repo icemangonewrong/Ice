@@ -1,8 +1,9 @@
-"""Settings saved between launches (in %APPDATA%\\IcePlex on Windows)."""
+"""Settings saved between launches (in %APPDATA%\\Ice on Windows)."""
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -16,7 +17,16 @@ def app_dir() -> Path:
         base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    d = Path(os.environ.get("ICEPLEX_HOME") or base / "IcePlex")
+    d = Path(os.environ.get("ICEPLEX_HOME") or base / "Ice")
+    if not d.exists() and not os.environ.get("ICEPLEX_HOME"):
+        # The app used to be called IcePlex: bring the sign-in and settings over.
+        old = base / "IcePlex"
+        if (old / "settings.json").exists():
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(old / "settings.json", d / "settings.json")
+            except Exception:
+                pass
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -26,7 +36,9 @@ def cache_dir() -> Path:
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     else:
         base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    d = Path(os.environ.get("ICEPLEX_CACHE") or base / "IcePlex")
+    if not os.environ.get("ICEPLEX_CACHE"):
+        shutil.rmtree(base / "IcePlex", ignore_errors=True)   # old name's video cache
+    d = Path(os.environ.get("ICEPLEX_CACHE") or base / "Ice")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -40,6 +52,7 @@ class Settings:
         "bufferMinutes": 10,
         "volume": 100,
         "tapToPause": False,
+        "accent": "#ff8c00",
         "audioDelays": {},          # audio device name -> delay in ms (negative = sound earlier)
         "muted": False,
         "geometry": None,

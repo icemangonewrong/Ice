@@ -7,8 +7,21 @@ import sys
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
+# The accent color (orange by default; can be changed in Settings). ORANGE is kept as the name
+# because it's used everywhere; it holds whatever accent is chosen.
+ACCENTS = [
+    ("Orange", "#ff8c00"),
+    ("Red", "#e5383b"),
+    ("Pink", "#ff4f9a"),
+    ("Purple", "#9b5cff"),
+    ("Blue", "#2f8cff"),
+    ("Teal", "#14b8a6"),
+    ("Green", "#3cc45a"),
+    ("Gold", "#f5c518"),
+]
 ORANGE = "#ff8c00"
 ORANGE_HOVER = "#ffa333"
+ACCENT_DIM = "{ACCENT_DIM}"      # dark tint of the accent, for selected rows
 BG = "#0b0b0e"
 PANEL = "#131318"
 CARD = "#1c1c22"
@@ -26,7 +39,8 @@ def font(size: float, weight: QFont.Weight = QFont.Normal) -> QFont:
     return f
 
 
-STYLESHEET = f"""
+def stylesheet() -> str:
+    return f"""
 * {{
     font-family: "{FONT_FAMILY}";
     color: {TEXT};
@@ -61,7 +75,7 @@ QPushButton:disabled {{ color: #666; }}
 QPushButton#Primary {{
     background: {ORANGE};
     border: none;
-    color: #111;
+    color: {on_accent_text()};
     padding: 10px 26px;
     font-size: 11.5pt;
     font-weight: 700;
@@ -80,7 +94,7 @@ QPushButton#Nav {{
     color: {MUTED};
 }}
 QPushButton#Nav:hover {{ background: #1e1e25; color: {TEXT}; }}
-QPushButton#Nav:checked {{ background: #2a1d0c; color: {ORANGE}; }}
+QPushButton#Nav:checked {{ background: {ACCENT_DIM}; color: {ORANGE}; }}
 
 QToolButton {{
     background: transparent;
@@ -114,7 +128,7 @@ QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox QAbstractItemView {{
     background: {CARD};
     border: 1px solid {LINE};
-    selection-background-color: #2a1d0c;
+    selection-background-color: {ACCENT_DIM};
     selection-color: {ORANGE};
     outline: none;
 }}
@@ -133,7 +147,7 @@ QMenu {{
     padding: 6px;
 }}
 QMenu::item {{ padding: 8px 28px 8px 14px; border-radius: 6px; font-size: 10.5pt; }}
-QMenu::item:selected {{ background: #2a1d0c; color: {ORANGE}; }}
+QMenu::item:selected {{ background: {ACCENT_DIM}; color: {ORANGE}; }}
 QMenu::item:disabled {{ color: {MUTED}; font-weight: 700; }}
 QMenu::separator {{ height: 1px; background: {LINE}; margin: 6px 8px; }}
 QMenu::indicator {{ width: 14px; height: 14px; }}
@@ -157,7 +171,7 @@ QListWidget::item {{
     padding: 14px;
 }}
 QListWidget::item:hover {{ background: #26262e; }}
-QListWidget::item:selected {{ background: #2a1d0c; color: {ORANGE}; }}
+QListWidget::item:selected {{ background: {ACCENT_DIM}; color: {ORANGE}; }}
 
 QToolTip {{
     background: #1d1d23; color: {TEXT}; border: 1px solid {LINE}; padding: 4px 8px;
@@ -165,10 +179,37 @@ QToolTip {{
 """
 
 
+def _mix(a: str, b: str, t: float) -> str:
+    ca, cb = QColor(a), QColor(b)
+    return QColor(round(ca.red() + (cb.red() - ca.red()) * t), round(ca.green() + (cb.green() - ca.green()) * t),
+                  round(ca.blue() + (cb.blue() - ca.blue()) * t)).name()
+
+
+def set_accent(color: str):
+    """Switch the accent color (before building widgets, or followed by a restyle)."""
+    global ORANGE, ORANGE_HOVER, ACCENT_DIM
+    if not color or not QColor(color).isValid():
+        color = ACCENTS[0][1]
+    ORANGE = QColor(color).name()
+    ORANGE_HOVER = _mix(ORANGE, "#ffffff", 0.2)
+    ACCENT_DIM = _mix(BG, ORANGE, 0.16)
+
+
+def accent_rgba(alpha: float) -> str:
+    c = QColor(ORANGE)
+    return f"rgba({c.red()},{c.green()},{c.blue()},{alpha})"
+
+
+def on_accent_text() -> str:
+    """Text color that reads well on top of the accent (dark on light accents)."""
+    c = QColor(ORANGE)
+    return "#111111" if (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) > 140 else "#ffffff"
+
+
 def full_stylesheet(assets_dir: str) -> str:
     """Stylesheet plus the rules that need image files (checkbox tick, dropdown arrow)."""
     d = assets_dir.replace("\\", "/")
-    return STYLESHEET + f"""
+    return stylesheet() + f"""
 QCheckBox::indicator:checked {{ image: url("{d}/check.png"); }}
 QComboBox::down-arrow {{ image: url("{d}/down.png"); width: 14px; height: 14px; }}
 """
@@ -256,6 +297,15 @@ def _draw(name: str, p: QPainter, s: float, color: str):
         p.setPen(_pen(color, lw))
         p.drawLine(QPointF(s * .60, s * .22), QPointF(s * .32, s * .50))
         p.drawLine(QPointF(s * .32, s * .50), QPointF(s * .60, s * .78))
+    elif name in ("down", "up"):
+        p.setPen(_pen(color, lw))
+        y1, y2 = (s * .38, s * .62) if name == "down" else (s * .62, s * .38)
+        p.drawLine(QPointF(s * .25, y1), QPointF(s * .50, y2))
+        p.drawLine(QPointF(s * .50, y2), QPointF(s * .75, y1))
+    elif name == "stop":
+        p.setPen(Qt.NoPen)
+        p.setBrush(c)
+        p.drawRoundedRect(QRectF(s * .27, s * .27, s * .46, s * .46), s * .05, s * .05)
     elif name in ("left", "right"):
         p.setPen(_pen(color, lw))
         if name == "left":

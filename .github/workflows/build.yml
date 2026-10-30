@@ -1,4 +1,4 @@
-name: Build IcePlex for Windows
+name: Build Ice for Windows
 
 on:
   push:
@@ -48,9 +48,9 @@ jobs:
           if (-not $dll) { Get-ChildItem mpv -Recurse | ForEach-Object { Write-Host $_.FullName }; throw "libmpv-2.dll not in archive" }
           Copy-Item $dll.FullName .\libmpv-2.dll
 
-      - name: Build IcePlex.exe
+      - name: Build Ice.exe
         run: >
-          pyinstaller --noconfirm --clean --windowed --name IcePlex
+          pyinstaller --noconfirm --clean --windowed --name Ice
           --icon assets/icon.ico
           --add-data "assets;assets"
           --add-binary "libmpv-2.dll;."
@@ -60,14 +60,14 @@ jobs:
       - name: Check the build
         shell: pwsh
         run: |
-          if (-not (Test-Path dist/IcePlex/IcePlex.exe)) { throw "IcePlex.exe missing" }
-          $dll = Get-ChildItem dist/IcePlex -Recurse -Filter libmpv-2.dll | Select-Object -First 1
+          if (-not (Test-Path dist/Ice/Ice.exe)) { throw "Ice.exe missing" }
+          $dll = Get-ChildItem dist/Ice -Recurse -Filter libmpv-2.dll | Select-Object -First 1
           if (-not $dll) { throw "libmpv-2.dll missing from build" }
-          Write-Host "OK: $((Get-ChildItem dist/IcePlex -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB) MB"
+          Write-Host "OK: $((Get-ChildItem dist/Ice -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB) MB"
 
       - name: Zip it
         shell: pwsh
-        run: Compress-Archive -Path dist/IcePlex -DestinationPath dist/IcePlex-Windows.zip
+        run: Compress-Archive -Path dist/Ice -DestinationPath dist/Ice-Windows.zip
 
       - name: Make installer
         continue-on-error: true
@@ -75,14 +75,14 @@ jobs:
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
-          & $iscc installer\IcePlex.iss
+          & $iscc installer\Ice.iss
 
       - uses: actions/upload-artifact@v4
         with:
-          name: IcePlex-Windows
+          name: Ice-Windows
           path: |
-            dist/IcePlex-Setup.exe
-            dist/IcePlex-Windows.zip
+            dist/Ice-Setup.exe
+            dist/Ice-Windows.zip
           if-no-files-found: warn
 
       # Publish each build from main as a GitHub Release (easy to download on a phone).
@@ -94,4 +94,4 @@ jobs:
         run: |
           tag="build-${{ github.run_number }}"
           git log -1 --pretty=%B > notes.txt
-          gh release create "$tag" dist/IcePlex-Setup.exe dist/IcePlex-Windows.zip --title "IcePlex for Windows (build ${{ github.run_number }})" --notes-file notes.txt --latest
+          gh release create "$tag" dist/Ice-Setup.exe dist/Ice-Windows.zip --title "Ice for Windows (build ${{ github.run_number }})" --notes-file notes.txt --latest

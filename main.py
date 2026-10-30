@@ -1,4 +1,4 @@
-"""IcePlex for Windows — a Plex player with true direct play."""
+"""Ice for Windows — a Plex player with true direct play."""
 import os
 import sys
 
@@ -31,12 +31,12 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("IcePlex")
-    app.setOrganizationName("IcePlex")
+    app.setApplicationName("Ice")
+    app.setOrganizationName("Ice")
     if sys.platform == "win32":
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("IcePlex.Windows")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Ice.Windows")
         except Exception:
             pass
 
@@ -50,8 +50,8 @@ def main():
         from iceplex.window import MainWindow
     except OSError as e:  # libmpv-2.dll missing or blocked
         from PySide6.QtWidgets import QMessageBox
-        QMessageBox.critical(None, "IcePlex", "IcePlex couldn't load its video engine (libmpv-2.dll).\n\n"
-                             "Make sure you extracted the whole IcePlex folder, then try again.\n\n" + str(e))
+        QMessageBox.critical(None, "Ice", "Ice couldn't load its video engine (libmpv-2.dll).\n\n"
+                             "Make sure you extracted the whole Ice folder, then try again.\n\n" + str(e))
         sys.exit(1)
     win = MainWindow()
     win.show_initial()

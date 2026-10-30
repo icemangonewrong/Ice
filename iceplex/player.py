@@ -44,7 +44,7 @@ class MpvWidget(QOpenGLWidget):
         locale.setlocale(locale.LC_NUMERIC, "C")
         self.mpv = mpv.MPV(vo="libmpv", keep_open="yes", idle="yes", osc="no", osd_level="0",
                            input_default_bindings="no", input_vo_keyboard="no", ytdl="no",
-                           terminal="no", audio_client_name="IcePlex")
+                           terminal="no", audio_client_name="Ice")
         opts = {
             "hwdec": "auto-safe",
             "cache": "yes",
@@ -55,10 +55,13 @@ class MpvWidget(QOpenGLWidget):
             "cache-pause-wait": "2",
             "network-timeout": "20",
             "stream-lavf-o": "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=30",
-            "user-agent": "IcePlex",
+            "user-agent": "Ice",
             "sub-auto": "fuzzy",
             "audio-file-auto": "no",
             "video-sync": "audio",
+            # Resume at the nearest keyframe instead of decoding forward to the exact second: starts
+            # much faster on big files. Seeks you make yourself are still exact (see seek()).
+            "hr-seek": "no",
         }
         os.makedirs(opts["demuxer-cache-dir"], exist_ok=True)
         for k, v in opts.items():
@@ -247,9 +250,18 @@ class Pill(QLabel):
         self.hide()
 
 
-OVERLAY_BTN = ("QPushButton { background: rgba(20,20,26,0.85); border: 1.5px solid rgba(255,255,255,0.8);"
-               " border-radius: 8px; padding: 10px 22px; font-size: 11.5pt; font-weight: 700; color: white; }"
-               "QPushButton:hover { background: rgba(255,140,0,0.95); border-color: rgba(255,140,0,1); color: #111; }")
+def overlay_btn_style() -> str:
+    return ("QPushButton { background: rgba(20,20,26,0.85); border: 1.5px solid rgba(255,255,255,0.8);"
+            " border-radius: 8px; padding: 10px 22px; font-size: 11.5pt; font-weight: 700; color: white; }"
+            f"QPushButton:hover {{ background: {theme.accent_rgba(0.95)}; border-color: {theme.ORANGE};"
+            f" color: {theme.on_accent_text()}; }}")
+
+
+def volume_style() -> str:
+    return ("QSlider::groove:horizontal { height: 4px; background: rgba(255,255,255,0.25); border-radius: 2px; }"
+            f"QSlider::sub-page:horizontal {{ background: {theme.ORANGE}; border-radius: 2px; }}"
+            "QSlider::handle:horizontal { background: white; width: 12px; height: 12px; margin: -4px 0;"
+            " border-radius: 6px; }")
 
 
 # ---------------------------------------------------------------------------
@@ -368,12 +380,14 @@ class AdjustPopup(QFrame):
 # ---------------------------------------------------------------------------
 
 BAR_H = 112
+MINI_H = 100            # height of the mini player along the bottom of the app
 UP_NEXT_SECS = 10
 
 
 class PlayerPage(QWidget):
     closed = Signal()
     toggle_fullscreen = Signal()
+    mode_changed = Signal(str)      # "full" or "mini"
 
     HIDE_AFTER_MS = 3000
 
@@ -393,11 +407,11 @@ class PlayerPage(QWidget):
         m.mute = bool(ctx.settings["muted"])
 
         # --- close button (top left) ----------------------------------------
-        self.close_btn = tool("back", 26, "Close player (Esc)", 9)
+        self.close_btn = tool("down", 26, "Minimize player (Esc)", 9)
         self.close_btn.setParent(self)
         self.close_btn.setStyleSheet("QToolButton { background: rgba(18,18,22,0.75); border-radius: 22px; padding: 9px; }"
                                      "QToolButton:hover { background: rgba(60,60,70,0.95); }")
-        self.close_btn.clicked.connect(self.stop)
+        self.close_btn.clicked.connect(self.minimize)
 
         # --- bottom bar ------------------------------------------------------
         self.bar = QFrame(self)
@@ -443,6 +457,15 @@ class PlayerPage(QWidget):
         ch.addWidget(self.div_r)
         ch.addSpacing(26)
         ch.addWidget(self.next_btn)
+        # Mini player only: stop
+        self.stop_wrap = QWidget()
+        sw = QHBoxLayout(self.stop_wrap)
+        sw.setContentsMargins(18, 0, 0, 0)
+        self.stop_btn = tool("stop", 24, "Stop")
+        self.stop_btn.clicked.connect(self.stop)
+        sw.addWidget(self.stop_btn)
+        ch.addWidget(self.stop_wrap)
+        self.stop_wrap.hide()
         # Keep the play button dead center even on movies, where there's no Next button.
         for w in (self.next_btn, self.div_r):
             sp = w.sizePolicy()
@@ -469,15 +492,14 @@ class PlayerPage(QWidget):
         self.vol.setValue(int(m.volume))
         self.vol.setFixedWidth(90)
         self.vol.setFocusPolicy(Qt.NoFocus)
-        self.vol.setStyleSheet(
-            "QSlider::groove:horizontal { height: 4px; background: rgba(255,255,255,0.25); border-radius: 2px; }"
-            f"QSlider::sub-page:horizontal {{ background: {theme.ORANGE}; border-radius: 2px; }}"
-            "QSlider::handle:horizontal { background: white; width: 12px; height: 12px; margin: -4px 0;"
-            " border-radius: 6px; }")
+        self.vol.setStyleSheet(volume_style())
         self.vol.valueChanged.connect(self._volume_changed)
         self.fs_btn = tool("fullscreen", 22, "Full screen (F)")
         self.fs_btn.clicked.connect(self.toggle_fullscreen.emit)
-        for w in (self.tracks_btn, self.delay_btn, self.mute_btn, self.vol, self.fs_btn):
+        self.expand_btn = tool("up", 26, "Open player")
+        self.expand_btn.clicked.connect(self.expand)
+        self.expand_btn.hide()
+        for w in (self.tracks_btn, self.delay_btn, self.mute_btn, self.vol, self.fs_btn, self.expand_btn):
             rh.addWidget(w)
 
         self.scrub = ScrubBar(self)
@@ -486,7 +508,7 @@ class PlayerPage(QWidget):
 
         # --- floating pieces ----------------------------------------------
         self.skip_btn = QPushButton("Skip Intro", self)
-        self.skip_btn.setStyleSheet(OVERLAY_BTN)
+        self.skip_btn.setStyleSheet(overlay_btn_style())
         self.skip_btn.setCursor(Qt.PointingHandCursor)
         self.skip_btn.setFocusPolicy(Qt.NoFocus)
         self.skip_btn.clicked.connect(self._skip_marker)
@@ -566,10 +588,12 @@ class PlayerPage(QWidget):
         self.sub_delay_ms = 0
         self.audio_device = None
         self.buffering = False
+        self.mode = "full"
 
         for w in self.findChildren(QWidget):
             w.setMouseTracking(True)
         self.video.installEventFilter(self)
+        self.info.installEventFilter(self)
 
     # ------------------------------------------------------------------ layout
 
@@ -578,6 +602,9 @@ class PlayerPage(QWidget):
 
     def _layout(self):
         w, h = self.width(), self.height()
+        if self.mode == "mini":
+            self._layout_mini(w, h)
+            return
         self.video.setGeometry(0, 0, w, h)
         self.close_btn.adjustSize()
         self.close_btn.move(18, 18)
@@ -593,7 +620,80 @@ class PlayerPage(QWidget):
         self.error_box.setGeometry(w // 2 - 260, h // 2 - 80, 520, 160)
         self._place_floating()
 
+    def _layout_mini(self, w, h):
+        top = self.scrub.height() // 2
+        bh = h - top
+        self.bar.setGeometry(0, top, w, bh)
+        self.scrub.setGeometry(0, 0, w, self.scrub.height())
+        th = bh - 16
+        tw = int(th * 16 / 9)
+        self.video.setGeometry(10, top + 8, tw, th)
+        cs = self.center.sizeHint()
+        self.center.setGeometry((w - cs.width()) // 2, (bh - cs.height()) // 2, cs.width(), cs.height())
+        rs = self.right.sizeHint()
+        self.right.setGeometry(w - rs.width() - 18, (bh - rs.height()) // 2, rs.width(), rs.height())
+        x = 10 + tw + 16
+        self.info.setGeometry(x, (bh - 66) // 2, max(self.center.x() - 24 - x, 80), 66)
+        self._elide_info()
+        sp = self.spinner
+        sp.move(10 + (tw - sp.width()) // 2, top + 8 + (th - sp.height()) // 2)
+
+    # ------------------------------------------------------------------ mini player
+
+    def minimize(self):
+        """Pause and shrink to the mini player along the bottom (Esc / back)."""
+        if not self.active or self.mode == "mini":
+            return
+        if not self._prop("pause", False):
+            try:
+                self.video.mpv.pause = True
+            except Exception:
+                pass
+            self._set_play_icon(False)
+            self._report()
+        self.set_mode("mini")
+
+    def expand(self):
+        if self.active and self.mode != "full":
+            self.set_mode("full")
+
+    def set_mode(self, mode: str):
+        self.mode = mode
+        mini = mode == "mini"
+        self.hide_timer.stop()
+        for w in (self.tracks_btn, self.delay_btn, self.fs_btn):
+            w.setVisible(not mini)
+        for w in (self.stop_wrap, self.expand_btn):
+            w.setVisible(mini)
+        self.title.setFont(theme.font(12 if mini else 13, QFont.Bold))
+        if mini:
+            for w in (self.close_btn, self.skip_btn, self.up_next, self.status, self.signal_pill, self.toast,
+                      self.error_box):
+                w.hide()
+            self.scrub.tip.hide()
+            self.setStyleSheet("QWidget#Player { background: transparent; }")
+            self.video.raise_()
+            self.spinner.raise_()
+        else:
+            self.setStyleSheet("QWidget#Player { background: black; }")
+            self.video.lower()
+        self.controls_shown = False
+        self.show_controls()
+        self.mode_changed.emit(mode)
+        self._layout()
+        if not mini:
+            self.setFocus()
+
+    def restyle(self):
+        """The accent color changed."""
+        self.vol.setStyleSheet(volume_style())
+        self.skip_btn.setStyleSheet(overlay_btn_style())
+        self.scrub.update()
+        self.spinner.update()
+
     def _place_floating(self):
+        if self.mode == "mini":
+            return
         w, h = self.width(), self.height()
         above = h - BAR_H - 24 if self.controls_shown else h - 36
         self.skip_btn.adjustSize()
@@ -621,6 +721,13 @@ class PlayerPage(QWidget):
 
     def start(self, item: Item, from_start: bool = False):
         """Plays a movie or episode (or a show's next episode)."""
+        if self.active and self.item:
+            # Something else was playing (e.g. in the mini player): save its spot first.
+            old, t, d = self.item, self.cur, self.dur
+            client0 = self.ctx.client
+            run_bg(lambda: client0.report_timeline(old, "stopped", int(t * 1000), int(d * 1000)),
+                   lambda _: self.ctx.data_changed.emit())
+            self.item = None
         self.active = True
         self.error_box.hide()
         self.status.hide()
@@ -689,8 +796,8 @@ class PlayerPage(QWidget):
             self.video.mpv["sub-delay"] = 0
         except Exception:
             pass
-        self._apply_audio_delay(force=True)
         self._open(resume)
+        self._apply_audio_delay(force=True)
         self.poll.start()
         self.report_timer.start()
         self.device_timer.start()
@@ -731,7 +838,8 @@ class PlayerPage(QWidget):
         run_bg(fetch, got)
 
     def _add_external_subs(self):
-        if not self.file_loaded or not self.pending_subs:
+        # Wait until the video is actually playing so fetching subtitle files never delays the start.
+        if not self.file_loaded or not self.has_played or not self.pending_subs:
             return
         subs, self.pending_subs = self.pending_subs, []
         for s in subs:
@@ -740,7 +848,7 @@ class PlayerPage(QWidget):
                 continue
             try:
                 # "auto" = add it to the menu without switching to it
-                self.video.mpv.command("sub-add", url, "auto", s["title"], s["lang"])
+                self.video.mpv.command_async("sub-add", url, "auto", s["title"], s["lang"])
             except Exception as e:  # noqa: BLE001
                 print("sub-add failed:", e)
 
@@ -798,6 +906,9 @@ class PlayerPage(QWidget):
         self.skip_btn.hide()
         self.toast.hide()
         self.setCursor(Qt.ArrowCursor)
+        if self.mode != "full":
+            self.mode = "full"
+            self.set_mode("full")
         if item:
             client = self.ctx.client
 
@@ -821,6 +932,8 @@ class PlayerPage(QWidget):
         self.video.shutdown()
 
     def _fatal(self, msg: str):
+        if self.mode == "mini":
+            self.set_mode("full")
         self.spinner.hide()
         self.status.hide()
         self.error_lbl.setText(msg)
@@ -903,7 +1016,9 @@ class PlayerPage(QWidget):
                 self.up_next_deadline = time.monotonic() + self._up_next_left
             left = self.up_next_deadline - time.monotonic()
             self._up_next_left = max(left, 0)
-            if not self.up_next.isVisible():
+            if self.mode == "mini":
+                self.up_next.hide()
+            elif not self.up_next.isVisible():
                 self.up_next.show_for(self.next_item, int(left + 0.99))
                 self._place_floating()
             else:
@@ -912,12 +1027,14 @@ class PlayerPage(QWidget):
                 self._advance(user=False)
                 return
         else:
-            if self.up_next.isVisible() and not (start_at is not None and self.cur >= start_at):
+            if (self.up_next.isVisible() or self.up_next_deadline is not None) and \
+                    not (start_at is not None and self.cur >= start_at):
                 self.up_next.hide()
                 self.up_next_deadline = None
                 self.up_next_cancelled = False   # they rewound out of the credits
 
-        show_skip = m is not None and id(m) not in self.skipped_markers and not self.up_next.isVisible()
+        show_skip = (m is not None and id(m) not in self.skipped_markers and not self.up_next.isVisible()
+                     and self.mode == "full")
         if show_skip:
             self.skip_btn.setText("Skip Intro" if m["type"] == "intro" else "Skip Credits")
             self.skip_btn.setProperty("marker", id(m))
@@ -1041,6 +1158,8 @@ class PlayerPage(QWidget):
         pop.show()
 
     def _toast(self, text: str, ms: int = 3500):
+        if self.mode == "mini":
+            return
         self.toast.setText(text)
         self.toast.show()
         self.toast.raise_()
@@ -1120,7 +1239,9 @@ class PlayerPage(QWidget):
 
         playing_now = t is not None and not paused and not idle and not pfc
         if playing_now and not seeking:
-            self.has_played = True
+            if not self.has_played:
+                self.has_played = True
+                self._add_external_subs()
             self.failures = 0
 
         buffering = (pfc or seeking or (not paused and idle and not eof) or self.reloading or t is None
@@ -1139,6 +1260,9 @@ class PlayerPage(QWidget):
             self.signal_pill.setText(f"No signal · playing from {time_str(self.buffered)} saved")
             self.signal_pill.show()
         else:
+            self.status.hide()
+            self.signal_pill.hide()
+        if self.mode == "mini":
             self.status.hide()
             self.signal_pill.hide()
 
@@ -1214,7 +1338,7 @@ class PlayerPage(QWidget):
         t = max(0.0, min(t, self.dur - 2 if self.dur else t))
         self.cur = t
         try:
-            self.video.mpv.command("seek", f"{t:.3f}", "absolute")
+            self.video.mpv.command("seek", f"{t:.3f}", "absolute+exact")
         except Exception:
             pass
         self.scrub.set_state(self.cur, self.buffered, self.dur)
@@ -1323,6 +1447,8 @@ class PlayerPage(QWidget):
         if not self.controls_shown:
             self.controls_shown = True
             for w in self.controls:
+                if w is self.close_btn and self.mode == "mini":
+                    continue
                 w.show()
                 w.raise_()
             for w in (self.skip_btn, self.up_next, self.spinner, self.status, self.signal_pill, self.toast,
@@ -1334,7 +1460,7 @@ class PlayerPage(QWidget):
         self.hide_timer.start(self.HIDE_AFTER_MS)
 
     def hide_controls(self):
-        if self.error_box.isVisible():
+        if self.error_box.isVisible() or self.mode == "mini":
             return
         self.hide_timer.stop()
         self.controls_shown = False
@@ -1346,7 +1472,7 @@ class PlayerPage(QWidget):
         self._place_floating()
 
     def _auto_hide(self):
-        if not self.active or self.dragging or self.error_box.isVisible():
+        if not self.active or self.dragging or self.error_box.isVisible() or self.mode == "mini":
             return
         if self._prop("pause", False):
             return
@@ -1369,6 +1495,17 @@ class PlayerPage(QWidget):
             self.show_controls()
 
     def eventFilter(self, obj, e):
+        if self.mode == "mini" and obj in (self.video, self.info):
+            # Mini player: click the picture or the title to open the full player.
+            if e.type() == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
+                self.expand()
+                return True
+            if e.type() == QEvent.MouseButtonDblClick:
+                return True
+            if obj is self.video and e.type() == QEvent.Wheel:
+                self.change_volume(5 if e.angleDelta().y() > 0 else -5)
+                return True
+            return False
         if obj is self.video:
             t = e.type()
             if t == QEvent.MouseMove:
@@ -1411,10 +1548,9 @@ class PlayerPage(QWidget):
         elif k in (Qt.Key_F, Qt.Key_F11):
             self.toggle_fullscreen.emit()
         elif k in (Qt.Key_Escape, Qt.Key_Back):
-            if self.window().isFullScreen():
-                self.toggle_fullscreen.emit()
-            else:
-                self.stop()
+            # Pause and drop to the mini player (it leaves full screen too).
+            if self.mode == "full":
+                self.minimize()
         elif k == Qt.Key_MediaStop:
             self.stop()
         else:
