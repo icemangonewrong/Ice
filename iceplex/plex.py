@@ -128,6 +128,27 @@ class Item:
         v = self.d.get("librarySectionID")
         return "" if v is None else str(v)
 
+    def markers(self) -> list[dict]:
+        """Intro / credits markers as [{'type': 'intro', 'start': secs, 'end': secs}, ...]."""
+        out = []
+        for m in self.d.get("Marker") or []:
+            t = m.get("type")
+            if t in ("intro", "credits") and m.get("startTimeOffset") is not None:
+                out.append({"type": t, "start": m["startTimeOffset"] / 1000,
+                            "end": (m.get("endTimeOffset") or m["startTimeOffset"]) / 1000,
+                            "final": bool(m.get("final"))})
+        return out
+
+    def external_subtitles(self) -> list[dict]:
+        """Subtitle files Plex has next to the video (.srt etc.), as opposed to ones inside it."""
+        out = []
+        for s in self.part.get("Stream") or []:
+            if s.get("streamType") == 3 and s.get("key"):
+                out.append({"key": s["key"], "lang": s.get("languageCode") or s.get("language") or "",
+                            "title": s.get("displayTitle") or s.get("title") or s.get("language") or "External",
+                            "forced": bool(s.get("forced"))})
+        return out
+
     def tags(self, name: str) -> list[str]:
         return [t.get("tag", "") for t in (self.d.get(name) or []) if t.get("tag")]
 
@@ -316,6 +337,27 @@ class PlexClient:
             if e.key == item.key:
                 return eps[i + 1] if i + 1 < len(eps) else None
         return None
+
+    def episode_before(self, item: Item) -> Optional[Item]:
+        show = item.get("grandparentRatingKey")
+        if item.type != "episode" or not show:
+            return None
+        eps = self._items(self.get(f"/library/metadata/{show}/allLeaves"))
+        for i, e in enumerate(eps):
+            if e.key == item.key:
+                return eps[i - 1] if i > 0 else None
+        return None
+
+    def details(self, key: str) -> Optional[Item]:
+        """Full metadata including intro/credits markers and every subtitle stream."""
+        items = self._items(self.get(f"/library/metadata/{key}", params={"includeMarkers": 1}))
+        return items[0] if items else None
+
+    def stream_url(self, key: str) -> Optional[str]:
+        s = self.server
+        if not s or not key:
+            return None
+        return s["baseURL"] + key + "?" + urllib.parse.urlencode({"X-Plex-Token": s["accessToken"]})
 
     def search(self, text: str) -> list[Item]:
         hubs = self._hubs(self.get("/hubs/search", params={"query": text, "limit": 20}))

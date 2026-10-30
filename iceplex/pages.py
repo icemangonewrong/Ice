@@ -567,8 +567,34 @@ class SettingsPage(ScrollPage):
         row.addStretch()
         self.body.addLayout(row)
 
+        self.section("Player")
+        tap = QCheckBox("Pause when the video is clicked")
+        tap.setChecked(bool(s["tapToPause"]))
+        tap.toggled.connect(lambda on: self.ctx.settings.__setitem__("tapToPause", on))
+        self.body.addWidget(tap)
+        note = label("When this is off, clicking the video just shows or hides the control bar.", "Muted", wrap=True)
+        self.body.addWidget(note)
+
+        delays = s["audioDelays"] or {}
+        self.section("Audio delay", "Set from the player's audio delay button. Each audio device keeps its own "
+                                    "setting, and it's applied automatically when that device is connected.")
+        if not delays:
+            self.body.addWidget(label("No devices adjusted yet.", "Muted"))
+        for dev, ms in sorted(delays.items()):
+            row = QHBoxLayout()
+            row.addWidget(label(dev))
+            row.addSpacing(16)
+            row.addWidget(label(f"{int(ms):+d} ms", "Muted"))
+            row.addSpacing(16)
+            rb = button("Reset")
+            rb.clicked.connect(lambda _=False, d=dev: self._reset_delay(d))
+            row.addWidget(rb)
+            row.addStretch()
+            self.body.addLayout(row)
+
         self.section("Player shortcuts")
         keys = [("Space / K", "Play / pause"), ("← / J", "Back 10 seconds"), ("→ / L", "Forward 10 seconds"),
+                ("Shift+N", "Next episode"), ("Shift+P", "Restart / previous episode"), ("S", "Skip intro / credits"),
                 ("↑ / ↓", "Volume"), ("M", "Mute"), ("F / double-click", "Full screen"),
                 ("Esc", "Leave full screen / close player")]
         g = QGridLayout()
@@ -599,6 +625,12 @@ class SettingsPage(ScrollPage):
             ex.add(key)
         self.ctx.settings["excludedSections"] = sorted(ex)
         self.ctx.libraries_changed()
+
+    def _reset_delay(self, dev):
+        d = dict(self.ctx.settings["audioDelays"] or {})
+        d.pop(dev, None)
+        self.ctx.settings["audioDelays"] = d
+        self.refresh()
 
     def _set_buffer(self, minutes):
         self.ctx.settings["bufferMinutes"] = minutes

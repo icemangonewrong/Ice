@@ -39,6 +39,8 @@ class Settings:
         "excludedSections": [],
         "bufferMinutes": 10,
         "volume": 100,
+        "tapToPause": False,
+        "audioDelays": {},          # audio device name -> delay in ms (negative = sound earlier)
         "muted": False,
         "geometry": None,
         "maximized": False,

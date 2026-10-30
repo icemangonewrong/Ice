@@ -224,6 +224,30 @@ def _draw(name: str, p: QPainter, s: float, color: str):
         p.setFont(f)
         p.setPen(c)
         p.drawText(QRectF(0, s * 0.03, s, s), Qt.AlignCenter, "10")
+    elif name in ("prev", "next"):
+        p.setPen(Qt.NoPen)
+        p.setBrush(c)
+        path = QPainterPath()
+        if name == "next":
+            path.moveTo(s * .20, s * .20); path.lineTo(s * .64, s * .50); path.lineTo(s * .20, s * .80)
+            path.closeSubpath()
+            p.drawPath(path)
+            p.drawRoundedRect(QRectF(s * .68, s * .20, s * .12, s * .60), s * .03, s * .03)
+        else:
+            path.moveTo(s * .80, s * .20); path.lineTo(s * .36, s * .50); path.lineTo(s * .80, s * .80)
+            path.closeSubpath()
+            p.drawPath(path)
+            p.drawRoundedRect(QRectF(s * .20, s * .20, s * .12, s * .60), s * .03, s * .03)
+    elif name == "audiodelay":
+        pen = _pen(color, s * .085)
+        p.setPen(pen)
+        for i, h in enumerate((.25, .5, .35, .6, .3)):
+            cx = s * (.12 + i * .12)
+            p.drawLine(QPointF(cx, s * (.5 - h / 2)), QPointF(cx, s * (.5 + h / 2)))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QRectF(s * .62, s * .50, s * .32, s * .32))
+        p.drawLine(QPointF(s * .78, s * .58), QPointF(s * .78, s * .67))
+        p.drawLine(QPointF(s * .78, s * .67), QPointF(s * .84, s * .70))
     elif name == "close":
         p.setPen(_pen(color, lw))
         p.drawLine(QPointF(s * .27, s * .27), QPointF(s * .73, s * .73))
