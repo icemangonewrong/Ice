@@ -853,7 +853,7 @@ class PlayerPage(QWidget):
                 print("sub-add failed:", e)
 
     def _configure_cache(self, item: Item):
-        minutes = int(self.ctx.settings["bufferMinutes"] or 10)
+        minutes = int(self.ctx.settings["bufferMinutes"] or 2)
         secs = minutes * 60
         kbps = item.media.get("bitrate")
         size = item.part.get("size")

@@ -49,7 +49,7 @@ class Settings:
         "token": None,
         "server": None,
         "excludedSections": [],
-        "bufferMinutes": 10,
+        "bufferMinutes": 2,
         "volume": 100,
         "tapToPause": False,
         "accent": "#ff8c00",
@@ -69,8 +69,14 @@ class Settings:
         if not self.data.get("clientIdentifier"):
             self.data["clientIdentifier"] = new_client_id()
             self.save()
+        if not self.data.get("bufferDefault2"):
+            # The default changed from 10 to 2 minutes; move anyone still on the old default.
+            if self.data.get("bufferMinutes") == 10:
+                self.data["bufferMinutes"] = 2
+            self.data["bufferDefault2"] = True
+            self.save()
         if self.data.get("bufferMinutes") not in BUFFER_CHOICES:
-            self.data["bufferMinutes"] = 10
+            self.data["bufferMinutes"] = 2
 
     def __getitem__(self, k):
         return self.data.get(k)
