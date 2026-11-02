@@ -353,6 +353,40 @@ class PlexClient:
         items = self._items(self.get(f"/library/metadata/{key}", params={"includeMarkers": 1}))
         return items[0] if items else None
 
+    # -- online subtitles (the same search Plex's own apps use) ----------------
+
+    def search_subtitles(self, key: str, language: str = "en", hearing_impaired: int = 0, forced: int = 0) -> list[dict]:
+        """Subtitles Plex finds online (OpenSubtitles etc.) for this video, best first."""
+        data = self.get(f"/library/metadata/{key}/subtitles",
+                        params={"language": language, "hearingImpaired": hearing_impaired, "forced": forced},
+                        timeout=40)
+        mc = data.get("MediaContainer", {}) if isinstance(data, dict) else {}
+        out = []
+        for s in mc.get("Stream") or []:
+            if not s.get("key"):
+                continue
+            out.append({
+                "key": s["key"],
+                "title": s.get("title") or s.get("displayTitle") or "Subtitle",
+                "provider": s.get("providerTitle") or "",
+                "score": s.get("score"),
+                "perfect": bool(s.get("perfectMatch")),
+                "hi": bool(s.get("hearingImpaired")),
+                "forced": bool(s.get("forced")),
+                "format": (s.get("format") or s.get("codec") or "").upper(),
+                "lang": s.get("languageCode") or s.get("language") or language,
+            })
+        out.sort(key=lambda x: (not x["perfect"], -(float(x["score"]) if x["score"] is not None else 0)))
+        return out
+
+    def download_subtitle(self, key: str, stream_key: str):
+        """Tells the server to fetch that subtitle and keep it with the video (it shows up a moment later)."""
+        s = self.server
+        if not s:
+            raise PlexError("No Plex server selected.")
+        self._req("PUT", s["baseURL"] + f"/library/metadata/{key}/subtitles", token=s["accessToken"],
+                  params={"key": stream_key}, timeout=40)
+
     def stream_url(self, key: str) -> Optional[str]:
         s = self.server
         if not s or not key:

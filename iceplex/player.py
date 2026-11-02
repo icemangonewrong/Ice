@@ -16,8 +16,8 @@ from typing import Optional
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QFont, QIcon, QLinearGradient, QOpenGLContext, QPainter, QPen
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QSlider, QToolButton,
-                               QVBoxLayout, QWidget, QPushButton)
+from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+                               QMenu, QSlider, QToolButton, QVBoxLayout, QWidget, QPushButton)
 
 from . import audiodev, theme
 from .config import cache_dir
@@ -322,6 +322,109 @@ class UpNextCard(QFrame):
 # Small popup with − / + for audio delay and subtitle timing
 # ---------------------------------------------------------------------------
 
+SUB_LANGS = [("English", "en"), ("Spanish", "es"), ("French", "fr"), ("German", "de"), ("Italian", "it"),
+             ("Portuguese", "pt"), ("Dutch", "nl"), ("Swedish", "sv"), ("Norwegian", "no"), ("Danish", "da"),
+             ("Finnish", "fi"), ("Polish", "pl"), ("Russian", "ru"), ("Ukrainian", "uk"), ("Czech", "cs"),
+             ("Hungarian", "hu"), ("Romanian", "ro"), ("Greek", "el"), ("Turkish", "tr"), ("Arabic", "ar"),
+             ("Hebrew", "he"), ("Hindi", "hi"), ("Japanese", "ja"), ("Korean", "ko"), ("Chinese", "zh"),
+             ("Vietnamese", "vi"), ("Thai", "th"), ("Indonesian", "id")]
+
+
+class SubtitleSearchPopup(QFrame):
+    """Find subtitles online through the Plex server (it searches OpenSubtitles, like Plex's own apps)."""
+
+    def __init__(self, parent, client, item_key: str, language: str, on_pick, on_language):
+        super().__init__(parent, Qt.Popup)
+        self.setObjectName("SubSearch")
+        self.setStyleSheet("QFrame#SubSearch { background: #1d1d23; border: 1px solid #2a2a32; border-radius: 12px; }"
+                           "QListWidget { background: #15151a; border: 1px solid #2a2a32; border-radius: 8px; }"
+                           "QListWidget::item { padding: 7px 6px; }"
+                           f"QListWidget::item:selected {{ background: {theme.ORANGE}; color: black; }}")
+        self.client, self.key, self.on_pick, self.on_language = client, item_key, on_pick, on_language
+        self.alive = True
+        self.destroyed.connect(lambda *_: setattr(self, "alive", False))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(18, 14, 18, 16)
+        v.setSpacing(8)
+        v.addWidget(label("Search for subtitles", "H3"))
+        n = label("Your Plex server looks them up online (OpenSubtitles) and saves the one you pick with the video.",
+                  "Muted", wrap=True)
+        n.setMaximumWidth(420)
+        v.addWidget(n)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.lang = QComboBox()
+        self.lang.setFocusPolicy(Qt.StrongFocus)
+        for name, code in SUB_LANGS:
+            self.lang.addItem(name, code)
+        i = self.lang.findData(language)
+        self.lang.setCurrentIndex(i if i >= 0 else 0)
+        self.lang.currentIndexChanged.connect(lambda *_: self.search())
+        row.addWidget(self.lang, 1)
+        self.hi = QComboBox()
+        for text, val in (("Regular", 0), ("Hearing impaired (SDH)", 1)):
+            self.hi.addItem(text, val)
+        self.hi.currentIndexChanged.connect(lambda *_: self.search())
+        row.addWidget(self.hi, 1)
+        v.addLayout(row)
+        self.list = QListWidget()
+        self.list.setMinimumSize(420, 260)
+        self.list.setCursor(Qt.PointingHandCursor)
+        self.list.itemActivated.connect(self._picked)
+        self.list.itemClicked.connect(lambda it: self.get_btn.setEnabled(it.data(Qt.UserRole) is not None))
+        v.addWidget(self.list)
+        self.status = label("", "Muted", wrap=True)
+        v.addWidget(self.status)
+        self.get_btn = QPushButton("Download and use")
+        self.get_btn.setObjectName("Primary")
+        self.get_btn.setCursor(Qt.PointingHandCursor)
+        self.get_btn.setEnabled(False)
+        self.get_btn.clicked.connect(lambda: self.list.currentItem() and self._picked(self.list.currentItem()))
+        v.addWidget(self.get_btn)
+        self.search()
+
+    def search(self):
+        code = self.lang.currentData()
+        hi = self.hi.currentData()
+        self.on_language(code)
+        self.list.clear()
+        self.get_btn.setEnabled(False)
+        self.status.setText("Searching…")
+        token = object()
+        self._token = token
+
+        def done(results):
+            if not self.alive or self._token is not token:
+                return
+            self.list.clear()
+            if not results:
+                self.status.setText("Nothing found in that language.")
+                return
+            self.status.setText(f"{len(results)} found · double-click one to use it.")
+            for r in results:
+                bits = [b for b in (r["provider"], r["format"], "SDH" if r["hi"] else "", "Forced" if r["forced"] else "") if b]
+                if r["score"] is not None:
+                    bits.append(f"match {r['score']}")
+                text = ("★ " if r["perfect"] else "") + r["title"] + ("\n" + "  ·  ".join(bits) if bits else "")
+                it = QListWidgetItem(text)
+                it.setData(Qt.UserRole, r)
+                self.list.addItem(it)
+            self.list.setCurrentRow(0)
+            self.get_btn.setEnabled(True)
+
+        def failed(e):
+            if self.alive and self._token is token:
+                self.status.setText(f"Couldn't search: {e}")
+
+        run_bg(lambda: self.client.search_subtitles(self.key, code, hi), done, failed)
+
+    def _picked(self, it):
+        r = it.data(Qt.UserRole) if it else None
+        if r:
+            self.on_pick(r)
+            self.close()
+
+
 class AdjustPopup(QFrame):
     def __init__(self, parent, title: str, note: str, value_ms: int, minus_text: str, plus_text: str,
                  describe, on_change, step: int = 50):
@@ -477,6 +580,11 @@ class PlayerPage(QWidget):
         self.fwd_btn.clicked.connect(lambda: self.skip(10))
         self.next_btn.clicked.connect(self.next_episode)
 
+        # Close (X): sits on its own between Next and the right-hand buttons so it isn't hit by accident.
+        self.x_btn = tool("close", 22, "Close the video")
+        self.x_btn.setParent(self.bar)
+        self.x_btn.clicked.connect(self.stop)
+
         self.right = QWidget(self.bar)
         rh = QHBoxLayout(self.right)
         rh.setContentsMargins(0, 0, 0, 0)
@@ -566,6 +674,7 @@ class PlayerPage(QWidget):
         self.next_item: Optional[Item] = None
         self.markers: list[dict] = []
         self.pending_subs: list[dict] = []
+        self.zoom_scale = 1.0
         self.file_loaded = False
         self.active = False
         self.cur = 0.0
@@ -614,6 +723,9 @@ class PlayerPage(QWidget):
         self.center.setGeometry((w - cs.width()) // 2, (BAR_H - cs.height()) // 2 + 6, cs.width(), cs.height())
         rs = self.right.sizeHint()
         self.right.setGeometry(w - rs.width() - 24, (BAR_H - rs.height()) // 2 + 6, rs.width(), rs.height())
+        xs = self.x_btn.sizeHint()
+        cx = (self.center.x() + self.center.width() + self.right.x()) // 2
+        self.x_btn.setGeometry(cx - xs.width() // 2, (BAR_H - xs.height()) // 2 + 6, xs.width(), xs.height())
         left_w = max(160, self.center.x() - 40)
         self.info.setGeometry(28, 22, left_w - 28, BAR_H - 30)
         self.spinner.move((w - self.spinner.width()) // 2, (h - self.spinner.height()) // 2)
@@ -661,7 +773,7 @@ class PlayerPage(QWidget):
         self.mode = mode
         mini = mode == "mini"
         self.hide_timer.stop()
-        for w in (self.tracks_btn, self.delay_btn, self.fs_btn):
+        for w in (self.tracks_btn, self.delay_btn, self.fs_btn, self.x_btn):
             w.setVisible(not mini)
         for w in (self.stop_wrap, self.expand_btn):
             w.setVisible(mini)
@@ -758,6 +870,8 @@ class PlayerPage(QWidget):
         if not url:
             self._fatal("Couldn't find the file for this video.")
             return
+        if not self.item or self.item.key != item.key:
+            self._reset_zoom_silently()
         self.item = item
         self.next_item = None
         self.markers = []
@@ -1147,6 +1261,123 @@ class PlayerPage(QWidget):
                           "◀  Earlier", "Later  ▶", describe, changed, step=100)
         self._popup(pop, self.tracks_btn)
 
+    # ------------------------------------------------------------------ online subtitles
+
+    def _show_sub_search(self):
+        if not self.item:
+            return
+        lang = self.ctx.settings["subSearchLang"] or (locale.getdefaultlocale()[0] or "en")[:2].lower()
+
+        def remember(code):
+            if code:
+                self.ctx.settings["subSearchLang"] = code
+
+        pop = SubtitleSearchPopup(self, self.ctx.client, self.item.key, lang, self._download_sub, remember)
+        self._popup(pop, self.tracks_btn)
+
+    def _download_sub(self, r: dict):
+        item = self.item
+        if not item:
+            return
+        key = item.key
+        self._toast("Downloading subtitles…", 20000)
+
+        def known():
+            full = self.ctx.client.details(key)
+            return {s["key"] for s in full.external_subtitles()} if full else set()
+
+        def fetch():
+            before = known()
+            self.ctx.client.download_subtitle(key, r["key"])
+            # The server fetches it in the background; wait for it to show up with the video.
+            for _ in range(20):
+                time.sleep(1.5)
+                full = self.ctx.client.details(key)
+                if not full:
+                    continue
+                new = [s for s in full.external_subtitles() if s["key"] not in before]
+                if new:
+                    return new[-1]
+            return None
+
+        def done(sub):
+            if not self.item or self.item.key != key:
+                return
+            if not sub:
+                self._toast("The server didn't get those subtitles. Try another one.")
+                return
+            url = self.ctx.client.stream_url(sub["key"])
+            try:
+                self.video.mpv.command_async("sub-add", url, "select", r.get("title") or sub["title"], sub["lang"])
+                self.video.mpv["sub-visibility"] = True
+                self._toast(f"Subtitles: {r.get('title') or sub['title']}")
+            except Exception as e:  # noqa: BLE001
+                self._toast(f"Couldn't load them: {e}")
+
+        def failed(e):
+            if self.item and self.item.key == key:
+                self._toast(f"Couldn't download: {e}")
+
+        run_bg(fetch, done, failed)
+
+    # ------------------------------------------------------------------ zoom (+ / - keys)
+
+    def _zoom_levels(self) -> list[float]:
+        fill = 1.0
+        try:
+            vw, vh = self.video.mpv["dwidth"], self.video.mpv["dheight"]
+            ww, wh = max(self.video.width(), 1), max(self.video.height(), 1)
+            if vw and vh:
+                va, wa = vw / vh, ww / wh
+                fill = max(va / wa, wa / va)
+        except Exception:
+            pass
+        steps = [1, 1 + (fill - 1) / 3, 1 + 2 * (fill - 1) / 3, fill] if fill > 1.02 else [1, 1.1, 1.2, 1.33]
+        z = steps[-1]
+        while z * 1.25 <= 4.001:
+            z *= 1.25
+            steps.append(z)
+        if steps[-1] < 4:
+            steps.append(4.0)
+        return steps
+
+    def zoom(self, direction: int):
+        levels = self._zoom_levels()
+        cur = self.zoom_scale
+        if direction == 0:
+            new = 1.0
+        elif direction > 0:
+            new = next((z for z in levels if z > cur + 0.005), levels[-1])
+        else:
+            new = next((z for z in reversed(levels) if z < cur - 0.005), 1.0)
+        self.zoom_scale = new
+        try:
+            import math
+            self.video.mpv["video-zoom"] = math.log2(new)
+            self.video.mpv["video-pan-x"] = 0
+            self.video.mpv["video-pan-y"] = 0
+        except Exception:
+            pass
+        if new <= 1.0:
+            self._toast("Original size", 1500)
+        elif abs(new - levels[3]) < 0.005:
+            self._toast("Zoom 3 of 3 · fill screen", 1500)
+        elif abs(new - levels[1]) < 0.005:
+            self._toast("Zoom 1 of 3", 1500)
+        elif abs(new - levels[2]) < 0.005:
+            self._toast("Zoom 2 of 3", 1500)
+        else:
+            self._toast(f"Zoom {new:.1f}×", 1500)
+
+    def _reset_zoom_silently(self):
+        self.zoom_scale = 1.0
+        try:
+            self.video.mpv["video-zoom"] = 0
+            self.video.mpv["video-pan-x"] = 0
+            self.video.mpv["video-pan-y"] = 0
+        except Exception:
+            pass
+
     def _popup(self, pop: QWidget, anchor: QWidget):
         self.hide_timer.stop()
         pop.adjustSize()
@@ -1427,6 +1658,8 @@ class PlayerPage(QWidget):
             menu.addSeparator()
         add_section("Subtitles", subs, "sid", True)
         menu.addSeparator()
+        find = menu.addAction("Search for subtitles…")
+        find.triggered.connect(lambda: QTimer.singleShot(0, self._show_sub_search))
         timing = menu.addAction("Subtitle timing…" + (f"  ({self.sub_delay_ms:+d} ms)" if self.sub_delay_ms else ""))
         timing.triggered.connect(lambda: QTimer.singleShot(0, self._show_sub_timing))
         self.hide_timer.stop()
@@ -1551,6 +1784,12 @@ class PlayerPage(QWidget):
             self._skip_marker()
         elif k in (Qt.Key_F, Qt.Key_F11):
             self.toggle_fullscreen.emit()
+        elif k in (Qt.Key_Plus, Qt.Key_Equal):
+            self.zoom(1)
+        elif k in (Qt.Key_Minus, Qt.Key_Underscore):
+            self.zoom(-1)
+        elif k == Qt.Key_0:
+            self.zoom(0)
         elif k in (Qt.Key_Escape, Qt.Key_Back):
             # Pause and drop to the mini player (it leaves full screen too).
             if self.mode == "full":

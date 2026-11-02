@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Optional
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QSize, Qt, Signal
+from PySide6.QtCore import QByteArray, QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget,
                                QToolButton, QVBoxLayout, QWidget, QApplication, QLineEdit)
@@ -359,7 +360,28 @@ class MainWindow(QMainWindow):
             self._was_maximized = self.isMaximized()
             self._fs_by_player = self.player_covering()
             self.showFullScreen()
+            self._fs_border()
+            QTimer.singleShot(0, self._fs_border)
         self.player.set_fullscreen_icon(self.isFullScreen())
+
+    def _fs_border(self):
+        """Windows: a full-screen OpenGL window gets switched into an exclusive "fullscreen" mode by the
+        desktop compositor, so the screen goes black for a moment entering/leaving full screen and whenever a
+        menu pops up over the video. A 1-pixel border keeps it a normal window (what Qt itself recommends)."""
+        if sys.platform != "win32" or not self.isFullScreen():
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            GWL_STYLE, WS_BORDER = -16, 0x00800000
+            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+            if not style & WS_BORDER:
+                user32.SetWindowLongW(hwnd, GWL_STYLE, style | WS_BORDER)
+                # SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0004 | 0x0010 | 0x0020)
+        except Exception as e:  # noqa: BLE001
+            print("fullscreen border:", e)
 
     # ------------------------------------------------------------------ events
 

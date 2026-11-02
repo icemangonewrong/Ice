@@ -617,6 +617,7 @@ class SettingsPage(ScrollPage):
         keys = [("Space / K", "Play / pause"), ("← / J", "Back 10 seconds"), ("→ / L", "Forward 10 seconds"),
                 ("Shift+N", "Next episode"), ("Shift+P", "Restart / previous episode"), ("S", "Skip intro / credits"),
                 ("↑ / ↓", "Volume"), ("M", "Mute"), ("F / double-click", "Full screen"),
+                ("+ / −", "Zoom in / out (steps to fill the screen, then up to 4×)"), ("0", "Original size"),
                 ("Esc", "Pause and minimize the player")]
         g = QGridLayout()
         g.setHorizontalSpacing(24)
