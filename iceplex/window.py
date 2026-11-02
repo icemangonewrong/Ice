@@ -105,6 +105,15 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Ice")
+        # Windows: keep a 1-pixel border in full screen. Without it the desktop compositor switches a full-screen
+        # OpenGL window into an exclusive mode and the screen blacks out for a moment on entering/leaving full
+        # screen and whenever a menu opens over the video. This is Qt's own switch for it, so Qt still knows the
+        # window is full screen (setting the border behind Qt's back made it lose track and get stuck).
+        if sys.platform == "win32":
+            self.setAttribute(Qt.WA_NativeWindow)
+            wh = self.windowHandle()
+            if wh is not None:
+                wh.setProperty("_q_has_border_in_fullscreen", True)
         self.setWindowIcon(QIcon(resource_path("icon.ico")))
         self.setMinimumSize(980, 640)
         self.ctx = Context(self)
@@ -360,28 +369,7 @@ class MainWindow(QMainWindow):
             self._was_maximized = self.isMaximized()
             self._fs_by_player = self.player_covering()
             self.showFullScreen()
-            self._fs_border()
-            QTimer.singleShot(0, self._fs_border)
         self.player.set_fullscreen_icon(self.isFullScreen())
-
-    def _fs_border(self):
-        """Windows: a full-screen OpenGL window gets switched into an exclusive "fullscreen" mode by the
-        desktop compositor, so the screen goes black for a moment entering/leaving full screen and whenever a
-        menu pops up over the video. A 1-pixel border keeps it a normal window (what Qt itself recommends)."""
-        if sys.platform != "win32" or not self.isFullScreen():
-            return
-        try:
-            import ctypes
-            user32 = ctypes.windll.user32
-            hwnd = int(self.winId())
-            GWL_STYLE, WS_BORDER = -16, 0x00800000
-            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
-            if not style & WS_BORDER:
-                user32.SetWindowLongW(hwnd, GWL_STYLE, style | WS_BORDER)
-                # SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
-                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0004 | 0x0010 | 0x0020)
-        except Exception as e:  # noqa: BLE001
-            print("fullscreen border:", e)
 
     # ------------------------------------------------------------------ events
 

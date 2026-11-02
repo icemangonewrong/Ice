@@ -719,20 +719,34 @@ class PlayerPage(QWidget):
         self.close_btn.move(18, 18)
         self.bar.setGeometry(0, h - BAR_H, w, BAR_H)
         self.scrub.setGeometry(0, h - BAR_H - self.scrub.height() // 2, w, self.scrub.height())
+        # Narrow window: drop the volume slider (mute and ↑/↓ still work) to make room.
+        self.vol.setVisible(w >= 1180)
         cs = self.center.sizeHint()
-        self.center.setGeometry((w - cs.width()) // 2, (BAR_H - cs.height()) // 2 + 6, cs.width(), cs.height())
         rs = self.right.sizeHint()
-        self.right.setGeometry(w - rs.width() - 24, (BAR_H - rs.height()) // 2 + 6, rs.width(), rs.height())
         xs = self.x_btn.sizeHint()
-        cx = (self.center.x() + self.center.width() + self.right.x()) // 2
-        self.x_btn.setGeometry(cx - xs.width() // 2, (BAR_H - xs.height()) // 2 + 6, xs.width(), xs.height())
-        left_w = max(160, self.center.x() - 40)
+        rx = w - rs.width() - 24
+        cy = (BAR_H - cs.height()) // 2 + 6
+        cx = (w - cs.width()) // 2
+        # The X sits halfway between Next and the right-hand buttons. If the window is too narrow for that,
+        # slide the middle buttons left so the X always has clear space on both sides.
+        gap = 28
+        cx = min(cx, rx - 2 * gap - xs.width() - cs.width())
+        show_x = cx >= 150
+        if not show_x:
+            cx = (w - cs.width()) // 2
+        self.x_btn.setVisible(show_x and self.mode == "full")
+        self.center.setGeometry(cx, cy, cs.width(), cs.height())
+        self.right.setGeometry(rx, (BAR_H - rs.height()) // 2 + 6, rs.width(), rs.height())
+        mid = (cx + cs.width() + rx) // 2
+        self.x_btn.setGeometry(mid - xs.width() // 2, (BAR_H - xs.height()) // 2 + 6, xs.width(), xs.height())
+        left_w = max(100, cx - 24)
         self.info.setGeometry(28, 22, left_w - 28, BAR_H - 30)
         self.spinner.move((w - self.spinner.width()) // 2, (h - self.spinner.height()) // 2)
         self.error_box.setGeometry(w // 2 - 260, h // 2 - 80, 520, 160)
         self._place_floating()
 
     def _layout_mini(self, w, h):
+        self.vol.show()
         top = self.scrub.height() // 2
         bh = h - top
         self.bar.setGeometry(0, top, w, bh)
