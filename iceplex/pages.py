@@ -632,6 +632,14 @@ class SettingsPage(ScrollPage):
         out = button("Sign out")
         out.clicked.connect(self.ctx.sign_out)
         self.body.addWidget(out, 0, Qt.AlignLeft)
+
+        from .version import BUILD
+        self.section("About")
+        self.body.addWidget(label(f"Ice for Windows  ·  build {BUILD}"))
+        self.body.addWidget(label("The newest build number is shown on the download page.", "Muted"))
+        upd = button("Check for updates")
+        upd.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/icemangonewrong/Ice/releases/latest")))
+        self.body.addWidget(upd, 0, Qt.AlignLeft)
         self.body.addStretch()
 
     def _got_sections(self, sections):
