@@ -707,6 +707,17 @@ class PlayerPage(QWidget):
         self.video.installEventFilter(self)
         self.info.installEventFilter(self)
 
+        # Button hints are drawn inside the player. Windows' own tooltips are separate little windows, and
+        # one popping up over the video makes the whole screen flash.
+        self.hint = QLabel(self)
+        self.hint.setStyleSheet("background: rgba(20,20,26,0.95); color: white; border-radius: 6px;"
+                                "padding: 4px 9px; font-weight: 600;")
+        self.hint.hide()
+        self._hint_for = None
+        for w in self.findChildren(QWidget):
+            if w is not self.hint and w is not self.video:
+                w.installEventFilter(self)
+
     # ------------------------------------------------------------------ layout
 
     def resizeEvent(self, e):
@@ -1861,6 +1872,7 @@ class PlayerPage(QWidget):
         self.controls_shown = False
         for w in self.controls:
             w.hide()
+        self._hide_hint()
         self.scrub.tip.hide()
         self.setCursor(Qt.BlankCursor)
         self.video.setCursor(Qt.BlankCursor)
@@ -1889,7 +1901,39 @@ class PlayerPage(QWidget):
         else:
             self.show_controls()
 
+    def _show_hint(self, w: QWidget):
+        text = w.toolTip()
+        if not text or not w.isVisible():
+            return
+        self._hint_for = w
+        self.hint.setText(text)
+        self.hint.adjustSize()
+        top_left = w.mapTo(self, QPoint(0, 0))
+        x = top_left.x() + (w.width() - self.hint.width()) // 2
+        x = max(8, min(x, self.width() - self.hint.width() - 8))
+        y = top_left.y() - self.hint.height() - 8
+        if y < 8:
+            y = top_left.y() + w.height() + 8
+        self.hint.move(x, y)
+        self.hint.show()
+        self.hint.raise_()
+
+    def _hide_hint(self, w=None):
+        if w is None or w is self._hint_for:
+            self.hint.hide()
+            self._hint_for = None
+
     def eventFilter(self, obj, e):
+        t0 = e.type()
+        if t0 == QEvent.ToolTip and obj is not self.video:
+            # Never let a native tooltip window appear over the video.
+            if isinstance(obj, QWidget):
+                self._show_hint(obj)
+            return True
+        if t0 in (QEvent.Leave, QEvent.Hide, QEvent.MouseButtonPress) and obj is self._hint_for:
+            self._hide_hint(obj)
+        if obj not in (self.video, self.info):
+            return False
         if self.mode == "mini" and obj in (self.video, self.info):
             # Mini player: click the picture or the title to open the full player.
             if e.type() == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
