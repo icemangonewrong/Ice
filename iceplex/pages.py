@@ -286,17 +286,19 @@ class HomePage(ScrollPage):
             self.body.addWidget(self.padded(label("Nothing in progress.", "Muted")))
         for s, items in recent:
             if items:
-                self.body.addWidget(self._row(f"Recently Added · {s['title']}", items, 160))
+                sort = "episode.addedAt:desc" if s.get("type") == "show" else "addedAt:desc"
+                self.body.addWidget(self._row(f"Recently Added · {s['title']}", items, 160,
+                                              lambda s=s, sort=sort: self.ctx.push(LibraryGridPage(self.ctx, s, sort))))
         self.body.addStretch()
         QTimer.singleShot(0, lambda: self.verticalScrollBar().setValue(sb))
 
-    def _row(self, title, items, width):
+    def _row(self, title, items, width, on_title=None):
         cards = []
         for it in items:
             c = PosterCard(it, self.ctx.client, width)
             c.clicked.connect(self.ctx.open)
             cards.append(c)
-        return CardRow(title, cards)
+        return CardRow(title, cards, on_title=on_title)
 
 
 # ===========================================================================
@@ -344,13 +346,15 @@ class LibrariesPage(ScrollPage):
 
 
 class LibraryGridPage(ScrollPage):
-    SORTS = [("Title", "titleSort"), ("Recently added", "addedAt:desc"),
-             ("Release date", "originallyAvailableAt:desc"), ("Recently watched", "lastViewedAt:desc")]
     PAGE = 60
 
-    def __init__(self, ctx, section: dict):
+    def __init__(self, ctx, section: dict, sort: Optional[str] = None):
         super().__init__()
         self.ctx, self.section = ctx, section
+        self.SORTS = [("Title", "titleSort"), ("Recently added", "addedAt:desc")]
+        if section.get("type") == "show":
+            self.SORTS.insert(1, ("Newest episode", "episode.addedAt:desc"))
+        self.SORTS += [("Release date", "originallyAvailableAt:desc"), ("Recently watched", "lastViewedAt:desc")]
         self.title = section["title"]
         self.body.setContentsMargins(32, 76, 32, 40)   # room for the back button
         self.body.setSpacing(20)
@@ -360,6 +364,9 @@ class LibraryGridPage(ScrollPage):
         self.sort = QComboBox()
         for name, _ in self.SORTS:
             self.sort.addItem(name)
+        if sort:
+            i = next((n for n, (_, v) in enumerate(self.SORTS) if v == sort), 0)
+            self.sort.setCurrentIndex(i)
         self.unwatched = QCheckBox("Unwatched only")
         head.addWidget(self.unwatched)
         head.addSpacing(16)

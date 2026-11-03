@@ -112,6 +112,7 @@ class ImageBox(QWidget):
         self.progress: Optional[float] = None
         self.check = False
         self.highlight = False
+        self.rating: Optional[float] = None   # IMDb score badge
         self.placeholder = "film"
 
     def set_url(self, url: Optional[str]):
@@ -159,6 +160,18 @@ class ImageBox(QWidget):
             p.setPen(pen)
             p.drawLine(cr.left() + d * .26, cr.top() + d * .52, cr.left() + d * .44, cr.top() + d * .70)
             p.drawLine(cr.left() + d * .44, cr.top() + d * .70, cr.left() + d * .76, cr.top() + d * .32)
+        if self.rating is not None:
+            f = QFont(theme.font(8.5 if self.width() < 170 else 9.5, QFont.Bold))
+            p.setFont(f)
+            fm = p.fontMetrics()
+            text = f"IMDb  {self.rating:.1f}"
+            bw, bh = fm.horizontalAdvance(text) + 12, fm.height() + 4
+            br = QRectF(6, 6, bw, bh)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#f5c518"))
+            p.drawRoundedRect(br, 4, 4)
+            p.setPen(QColor("black"))
+            p.drawText(br, Qt.AlignCenter, text)
         if self.highlight:
             p.setPen(QPen(QColor(theme.ORANGE), 2.5))
             p.setBrush(Qt.NoBrush)
@@ -186,6 +199,7 @@ class PosterCard(QWidget):
         self.img.set_url(client.image_url(path, width * 2, h * 2))
         self.img.progress = item.progress
         self.img.check = item.show_check
+        self.img.rating = item.imdb_rating
         self.img.highlight = current
         lay.addWidget(self.img)
         t = label(title if title is not None else item.display_title)
@@ -236,15 +250,39 @@ class _HScroll(QScrollArea):
             e.ignore()  # let the page scroll vertically
 
 
+class _TitleLink(QLabel):
+    clicked = Signal()
+
+    def __init__(self, text):
+        super().__init__(text + "  ›")
+        self.setObjectName("H2")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("See all")
+
+    def enterEvent(self, e):
+        self.setStyleSheet(f"color: {theme.ORANGE};")
+
+    def leaveEvent(self, e):
+        self.setStyleSheet("")
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+
+
 class CardRow(QWidget):
-    def __init__(self, title: str, cards: list[QWidget], parent=None):
+    def __init__(self, title: str, cards: list[QWidget], parent=None, on_title: Optional[Callable] = None):
         super().__init__(parent)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
         head = QHBoxLayout()
         head.setContentsMargins(32, 0, 24, 0)
-        t = label(title, "H2")
+        if on_title:
+            t = _TitleLink(title)
+            t.clicked.connect(on_title)
+        else:
+            t = label(title, "H2")
         head.addWidget(t)
         head.addStretch()
         self.left = QToolButton()

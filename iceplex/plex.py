@@ -109,6 +109,23 @@ class Item:
         return (self.d.get("viewCount") or 0) > 0
 
     @property
+    def imdb_rating(self) -> Optional[float]:
+        """The IMDb score, when the server has one (library's ratings source set to IMDb, or listed in Rating)."""
+        for r in self.d.get("Rating") or []:
+            if str(r.get("image") or "").startswith("imdb://") and r.get("value") is not None:
+                try:
+                    return float(r["value"])
+                except (TypeError, ValueError):
+                    pass
+        for k, img in (("audienceRating", "audienceRatingImage"), ("rating", "ratingImage")):
+            if str(self.d.get(img) or "").startswith("imdb://") and self.d.get(k) is not None:
+                try:
+                    return float(self.d[k])
+                except (TypeError, ValueError):
+                    pass
+        return None
+
+    @property
     def show_check(self) -> bool:
         """Checkmark only for finished items (a rewatch in progress shows the bar instead)."""
         return self.is_watched and self.progress is None
@@ -312,7 +329,14 @@ class PlexClient:
         params = {"sort": sort, "X-Plex-Container-Start": start, "X-Plex-Container-Size": size}
         if unwatched:
             params["unwatched"] = 1
-        mc = self.get(f"/library/sections/{section}/all", params=params).get("MediaContainer", {})
+        try:
+            mc = self.get(f"/library/sections/{section}/all", params=params).get("MediaContainer", {})
+        except PlexError:
+            if not sort.startswith("episode."):
+                raise
+            # Older servers without "newest episode" sorting: fall back to when the show was added.
+            params["sort"] = "addedAt:desc"
+            mc = self.get(f"/library/sections/{section}/all", params=params).get("MediaContainer", {})
         return [Item(m) for m in (mc.get("Metadata") or [])], mc.get("totalSize")
 
     def children(self, key: str) -> list[Item]:
