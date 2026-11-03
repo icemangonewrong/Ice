@@ -58,6 +58,8 @@ class MpvWidget(QOpenGLWidget):
             "user-agent": "Ice",
             "sub-auto": "fuzzy",
             "audio-file-auto": "no",
+            # English audio first, whatever the file marks as default (falls back to the default if none).
+            "alang": "en,eng,english",
             "video-sync": "audio",
             # Resume at the nearest keyframe instead of decoding forward to the exact second: starts
             # much faster on big files. Seeks you make yourself are still exact (see seek()).
@@ -914,6 +916,8 @@ class PlayerPage(QWidget):
         self.skip_btn.hide()
         self.sub_delay_ms = 0
         self._user_picked_sub = False
+        self._user_picked_audio = False
+        self._audio_checked_until = time.monotonic() + 20
         self._embedded_subs = 0
         self.switching = False
         self.dur = item.duration_ms / 1000
@@ -1687,6 +1691,7 @@ class PlayerPage(QWidget):
                 return
 
         self._keep_subs_off()
+        self._prefer_english_audio()
         self._preload_next(stream_done)
         self._update_markers()
         self._set_play_icon(not paused, buffering)
@@ -1872,7 +1877,32 @@ class PlayerPage(QWidget):
             return str(cur)
         return "no"
 
+    def _prefer_english_audio(self):
+        """Backup for alang: for the first seconds of a video, switch to an English audio track if the file
+        started on another language and has one (unless you picked a track yourself)."""
+        if self._user_picked_audio or not self.file_loaded or self._audio_checked_until < time.monotonic():
+            return
+        try:
+            tracks = [t for t in self.video.mpv.track_list if t.get("type") == "audio"]
+        except Exception:
+            return
+        def english(t):
+            lang = (t.get("lang") or "").lower()
+            title = (t.get("title") or "").lower()
+            return lang in ("en", "eng", "english") or (not lang and "english" in title)
+        cur = next((t for t in tracks if t.get("selected")), None)
+        if cur is None or english(cur):
+            return
+        en = next((t for t in tracks if english(t) and "commentary" not in (t.get("title") or "").lower()), None)
+        if en:
+            try:
+                self.video.mpv["aid"] = en["id"]
+            except Exception:
+                pass
+
     def _set_track(self, prop, value):
+        if prop == "aid":
+            self._user_picked_audio = True
         if prop == "sid":
             self._user_picked_sub = True
         try:
