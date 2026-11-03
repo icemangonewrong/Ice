@@ -973,10 +973,6 @@ class PlayerPage(QWidget):
                 self.pending_subs = full.external_subtitles()
                 self._embedded_subs = sum(1 for st in full.part.get("Stream") or []
                                           if st.get("streamType") == 3 and not st.get("key"))
-                pick = full.selected_embedded_subtitle()
-                if pick and not self._user_picked_sub:
-                    self._set_track("sid", pick)
-                    self._user_picked_sub = False
                 self._add_external_subs()
             self.next_item = nxt
             self.next_btn.setEnabled(nxt is not None)
@@ -996,8 +992,7 @@ class PlayerPage(QWidget):
                 continue
             try:
                 # "auto" = add it to the menu without switching to it; "select" if you picked it in Plex
-                flag = "select" if s.get("selected") and not self._user_picked_sub else "auto"
-                self.video.mpv.command_async("sub-add", url, flag, s["title"], s["lang"])
+                self.video.mpv.command_async("sub-add", url, "auto", s["title"], s["lang"])
             except Exception as e:  # noqa: BLE001
                 print("sub-add failed:", e)
 
@@ -1057,7 +1052,12 @@ class PlayerPage(QWidget):
         if p and p.key not in keep:
             self.preload = None
             p = None
-        if not nxt or not self.has_played or not self.dur or self.dur - self.cur > prefetch.START_WHEN_LEFT:
+        left = self.dur - self.cur if self.dur else 0
+        if not self.has_played or not self.dur or left > prefetch.START_WHEN_LEFT:
+            return
+        # Last 5 minutes: keep loading this episode all the way to its end, whatever the buffer setting.
+        self._load_to_end(left)
+        if not nxt:
             return
         if p is None or p.key != nxt.key:
             if self._preload_pending == nxt.key:
@@ -1098,11 +1098,37 @@ class PlayerPage(QWidget):
 
             run_bg(prepare, ready, failed)
             return
-        # Pause the preload whenever the current episode needs the bandwidth.
-        if stream_done or self.buffered >= min(prefetch.MIN_CUSHION, max(self.dur - self.cur - 2, 0)):
+        # The next episode only loads once this one is loaded to the end, so it never takes bandwidth from it.
+        if stream_done or self.buffered >= max(left - 2, 0):
             p.allowed.set()
         else:
             p.allowed.clear()
+
+    def _load_to_end(self, left: float):
+        want = left + 60
+        if want <= self.readahead:
+            return
+        self.readahead = want
+        item = self.item
+        kbps = item.media.get("bitrate") if item else None
+        size = item.part.get("size") if item else None
+        bps = kbps * 1000 / 8 if kbps else (size / self.dur if size and self.dur else 2_500_000)
+        m = self.video.mpv
+        for k, v in (("demuxer-readahead-secs", str(int(want))), ("cache-secs", str(int(want)))):
+            try:
+                m[k] = v
+            except Exception:
+                pass
+        try:
+            cur_max = int(m["demuxer-max-bytes"] or 0)
+        except Exception:
+            cur_max = 0
+        need = int(bps * want * 1.2)
+        if need > cur_max:
+            try:
+                m["demuxer-max-bytes"] = str(need)
+            except Exception:
+                pass
 
     def stop(self):
         if not self.active:
@@ -1412,6 +1438,7 @@ class PlayerPage(QWidget):
                 self._toast("The server didn't get those subtitles. Try another one.")
                 return
             url = self.ctx.client.stream_url(sub["key"])
+            self._user_picked_sub = True
             try:
                 self.video.mpv.command_async("sub-add", url, "select", r.get("title") or sub["title"], sub["lang"])
                 self.video.mpv["sub-visibility"] = True
@@ -1611,6 +1638,7 @@ class PlayerPage(QWidget):
                 self._finished()
                 return
 
+        self._keep_subs_off()
         self._preload_next(stream_done)
         self._update_markers()
         self._set_play_icon(not paused, buffering)
@@ -1773,6 +1801,17 @@ class PlayerPage(QWidget):
         g = self.tracks_btn.mapToGlobal(self.tracks_btn.rect().topLeft())
         menu.exec(g - QPoint(menu.sizeHint().width() - self.tracks_btn.width(), menu.sizeHint().height() + 10))
         self.show_controls()
+
+    def _keep_subs_off(self):
+        """Subtitles stay off unless you turn one on in Ice. (Files can mark a track as default, and the
+        player would show it; Plex doesn't.) Checked on every tick, so nothing can switch one on behind us."""
+        if self._user_picked_sub or not self.file_loaded:
+            return
+        try:
+            if self.video.mpv["sid"] not in (False, None, "no"):
+                self.video.mpv["sid"] = "no"
+        except Exception:
+            pass
 
     def _reopen_sid(self) -> str:
         if not self.file_loaded and not self.has_played:
