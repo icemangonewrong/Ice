@@ -78,6 +78,13 @@ class Context(QObject):
     def play(self, item: Item, from_start: bool = False):
         self.window.play(item, from_start)
 
+    def warm(self, item: Item):
+        """Info page open: get the start of the video ready so Play starts at once."""
+        try:
+            self.window.player.warm(item)
+        except Exception as e:  # noqa: BLE001
+            print("warm:", e)
+
     def set_accent(self, color: str):
         self.settings["accent"] = color
         self.window.apply_accent()

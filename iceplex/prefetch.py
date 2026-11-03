@@ -1,4 +1,4 @@
-"""Next-episode preload.
+"""Preloading (the next episode near the end of one, and whatever info page is open).
 
 Near the end of an episode, the first ~20 seconds of the next one (plus the last few MB of the file,
 where some formats keep their index) are downloaded into memory. When the next episode starts, mpv
@@ -25,15 +25,29 @@ CHUNK = 256 * 1024
 
 
 class Preload:
-    def __init__(self, key: str, url: str, size: Optional[int], bitrate_kbps: Optional[int]):
+    """Pieces of one video file held in memory: (start byte, data) ranges, downloaded in order."""
+
+    def __init__(self, key: str, url: str, size: Optional[int], bitrate_kbps: Optional[int],
+                 seconds: float = PRELOAD_SECS, at_seconds: float = 0.0, duration: float = 0.0):
         self.key, self.url, self.size = key, url, size
         bps = (bitrate_kbps or 8000) * 1000 / 8
-        self.head_want = int(min(max(bps * PRELOAD_SECS * 1.1, HEAD_MIN), HEAD_MAX))
+        want = int(min(max(bps * seconds * 1.1, HEAD_MIN), HEAD_MAX))
+        plan: list[tuple[int, int]] = []
+        if at_seconds > 1 and size and duration > 0:
+            # Resuming partway: the file's start (headers), then a window around the resume point
+            # (its byte position is estimated from the average bitrate, so leave some room before it).
+            plan.append((0, 2_000_000))
+            est = int(size * at_seconds / duration)
+            before = int(bps * 10)
+            plan.append((max(est - before, 0), want + before))
+        else:
+            plan.append((0, want))
         if size:
-            self.head_want = min(self.head_want, size)
-        self.head = bytearray()
-        self.tail = b""
-        self.tail_start: Optional[int] = None
+            plan.append((size - TAIL_BYTES, TAIL_BYTES))
+            plan = [(a, min(n, size - a)) for a, n in plan if a < size]
+        self.plan = plan
+        self.parts: list[list] = []          # [start, bytearray], in plan order
+        self.head_want = plan[0][1]
         self.allowed = threading.Event()     # cleared = pause (current episode needs the bandwidth)
         self.cancelled = threading.Event()
         self.done = False
@@ -48,7 +62,19 @@ class Preload:
         self.allowed.set()
 
     def head_len(self) -> int:
-        return len(self.head)
+        return len(self.parts[0][1]) if self.parts else 0
+
+    def part_at(self, pos: int):
+        """(start, data) of the downloaded piece containing pos, or None."""
+        for st, buf in list(self.parts):
+            if st <= pos < st + len(buf):
+                return st, buf
+        return None
+
+    def next_start(self, pos: int) -> Optional[int]:
+        """Where the next downloaded piece after pos begins."""
+        later = [st for st, buf in list(self.parts) if st > pos and len(buf)]
+        return min(later) if later else None
 
     # -- download ---------------------------------------------------------------
 
@@ -60,29 +86,30 @@ class Preload:
 
     def _run(self):
         try:
-            if not self._wait_allowed():
-                return
-            with requests.get(self.url, headers={"Range": f"bytes=0-{self.head_want - 1}"},
-                              stream=True, timeout=(10, 30)) as r:
-                if r.status_code not in (200, 206):
+            for i, (a, n) in enumerate(self.plan):
+                if not self._wait_allowed():
                     return
-                m = re.search(r"/(\d+)$", r.headers.get("Content-Range", ""))
-                if m:
-                    self.size = int(m.group(1))
-                elif r.status_code == 200 and r.headers.get("Content-Length"):
-                    self.size = int(r.headers["Content-Length"])
-                for chunk in r.iter_content(CHUNK):
-                    if not self._wait_allowed():
+                if self.size and i > 0 and any(st <= a < st + len(b) for st, b in self.parts):
+                    continue
+                buf = bytearray()
+                self.parts.append([a, buf])
+                with requests.get(self.url, headers={"Range": f"bytes={a}-{a + n - 1}"},
+                                  stream=True, timeout=(10, 30)) as r:
+                    if r.status_code not in (200, 206):
                         return
-                    room = self.head_want - len(self.head)
-                    self.head += chunk[:room]
-                    if len(self.head) >= self.head_want:
-                        break
-            if self.size and self.size > len(self.head) + TAIL_BYTES and self._wait_allowed():
-                start = self.size - TAIL_BYTES
-                r = requests.get(self.url, headers={"Range": f"bytes={start}-{self.size - 1}"}, timeout=(10, 30))
-                if r.status_code == 206 and len(r.content) == TAIL_BYTES:
-                    self.tail, self.tail_start = r.content, start
+                    if r.status_code == 200 and a > 0:
+                        return
+                    m = re.search(r"/(\d+)$", r.headers.get("Content-Range", ""))
+                    if m:
+                        self.size = int(m.group(1))
+                    elif r.status_code == 200 and r.headers.get("Content-Length"):
+                        self.size = int(r.headers["Content-Length"])
+                    for chunk in r.iter_content(CHUNK):
+                        if not self._wait_allowed():
+                            return
+                        buf += chunk[:n - len(buf)]
+                        if len(buf) >= n:
+                            break
             self.done = True
         except Exception as e:  # noqa: BLE001  (a failed preload just means a normal start)
             print("preload:", e)
@@ -148,39 +175,47 @@ class _Handler(BaseHTTPRequestHandler):
             print("preload serve:", e)
 
     def _send(self, p: Preload, a: int, b: int):
-        head = p.head            # what's downloaded right now
-        hl = len(head)
-        tail, ts = p.tail, p.tail_start
+        self._up = None
+        try:
+            self._send_range(p, a, b)
+        finally:
+            if self._up:
+                self._up.close()   # mpv hung up before using it
+
+    def _send_range(self, p: Preload, a: int, b: int):
         pos = a
         upstream = None
-        # Open the connection for whatever comes after the preloaded part while that part is sent.
-        if pos < hl and b >= hl:
-            up_end = (ts - 1) if (ts is not None and b >= ts) else b
-            if up_end >= hl:
-                upstream = _Opener(p.url, hl, up_end)
         while pos <= b:
-            if pos < hl:
-                end = min(hl, b + 1)
+            part = p.part_at(pos)
+            if part:
+                st, buf = part
+                end = min(st + len(buf), b + 1)
+                if end <= b and upstream is None and p.part_at(end) is None:
+                    # Open the connection for what follows while this piece is sent.
+                    nxt = p.next_start(end)
+                    upstream = self._up = _Opener(p.url, end, min(b, nxt - 1) if nxt else b)
                 for i in range(pos, end, CHUNK):
-                    self.wfile.write(head[i:min(i + CHUNK, end)])
+                    self.wfile.write(buf[i - st:min(i + CHUNK, end) - st])
                 pos = end
-            elif ts is not None and pos >= ts:
-                self.wfile.write(tail[pos - ts:b + 1 - ts])
-                pos = b + 1
+                continue
+            nxt = p.next_start(pos)
+            up_end = min(b, nxt - 1) if nxt else b
+            if upstream and upstream.start == pos:
+                r = upstream.get()
             else:
-                up_end = (ts - 1) if (ts is not None and b >= ts) else b
-                r = upstream.get() if (upstream and upstream.start == pos) else _open(p.url, pos, up_end)
-                upstream = None
-                with r:
-                    for chunk in r.iter_content(CHUNK):
-                        self.wfile.write(chunk)
-                        pos += len(chunk)
-                        if pos > up_end:
-                            break
-                if pos <= up_end:
-                    return   # server cut off; mpv reconnects for the rest
-        if upstream:
-            upstream.close()
+                if upstream:
+                    upstream.close()
+                r = _open(p.url, pos, up_end)
+            upstream = self._up = None
+            with r:
+                for chunk in r.iter_content(CHUNK):
+                    take = chunk[:up_end + 1 - pos]
+                    self.wfile.write(take)
+                    pos += len(take)
+                    if pos > up_end:
+                        break
+            if pos <= up_end:
+                return   # server cut off; mpv reconnects for the rest
 
 
 def _open(url, start, end):
@@ -244,6 +279,13 @@ def keep_only(keys: set[str]):
             if p.key not in keys:
                 p.cancel()
                 del _preloads[t]
+
+
+def find(key: str) -> Optional[Preload]:
+    """The most recent preload for this video, if any."""
+    with _lock:
+        found = [p for p in _preloads.values() if p.key == key and not p.cancelled.is_set()]
+    return found[-1] if found else None
 
 
 def url_for(p: Preload) -> Optional[str]:

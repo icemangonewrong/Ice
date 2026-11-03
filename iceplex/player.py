@@ -1039,6 +1039,10 @@ class PlayerPage(QWidget):
         self.file_loaded = False
         url = self.ctx.client.direct_url(self.item)
         p = self.preload
+        if not (p and p.key == self.item.key):
+            p = prefetch.find(self.item.key)    # warmed up from its info page
+            if p:
+                self.preload = p
         if p and p.key == self.item.key and p.head_len() > 0 and p.size:
             local = prefetch.url_for(p)
             if local:
@@ -1053,6 +1057,39 @@ class PlayerPage(QWidget):
         self._set_play_icon(True)
 
     # ------------------------------------------------------------------ next-episode preload
+
+    def warm(self, item: Item):
+        """An info page is open: fetch ~10 s from where Play would start, so it starts at once.
+        Skipped while something else is playing, so it never takes that video's bandwidth."""
+        if self.active and self.item and not self._prop("pause", True):
+            return
+        if not item or item.type not in ("movie", "episode") or not item.part.get("key"):
+            return
+        size = item.part.get("size")
+        dur = item.duration_ms / 1000
+        if not size or dur <= 0:
+            return
+        at = item.offset_ms / 1000
+        if at > dur - 120:
+            at = 0.0
+        w = getattr(self, "_warm", None)
+        if w and w.key == item.key and abs(getattr(w, "at", 0) - at) < 5 and not w.cancelled.is_set():
+            return
+        if w:
+            w.cancel()
+        url = self.ctx.client.direct_url(item)
+        if not url:
+            return
+        p = prefetch.Preload(item.key, url, int(size), item.media.get("bitrate"), seconds=10,
+                             at_seconds=at, duration=dur)
+        p.at = at
+        keep = {k for k in (self.item.key if self.item else None,
+                            self.next_item.key if self.next_item else None, item.key) if k}
+        prefetch.keep_only(keep)
+        prefetch.register(p)
+        p.allowed.set()
+        p.start()
+        self._warm = p
 
     def _preload_next(self, stream_done: bool):
         """With 5 minutes or less left, fetch the first ~20 s of the next episode so it starts at once.

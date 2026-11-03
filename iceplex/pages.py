@@ -301,6 +301,17 @@ class HomePage(ScrollPage):
         return CardRow(title, cards, on_title=on_title)
 
 
+class NoWheelCombo(QComboBox):
+    """A dropdown that scrolling the page past it doesn't change (only clicking it does)."""
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
 # ===========================================================================
 # Libraries
 # ===========================================================================
@@ -361,7 +372,7 @@ class LibraryGridPage(ScrollPage):
         head = QHBoxLayout()
         head.addWidget(label(section["title"], "H1"))
         head.addStretch()
-        self.sort = QComboBox()
+        self.sort = NoWheelCombo()
         for name, _ in self.SORTS:
             self.sort.addItem(name)
         if sort:
@@ -583,7 +594,7 @@ class SettingsPage(ScrollPage):
         self.section("Buffering", "How much video to download ahead so playback keeps going through a weak or "
                                   "dropped connection (like a phone hotspot on the road). It's kept on disk, not "
                                   "in memory. It also keeps loading while paused, so you can pause and let it fill.")
-        combo = QComboBox()
+        combo = NoWheelCombo()
         for m in BUFFER_CHOICES:
             combo.addItem(f"{m} minutes", m)
         combo.setCurrentIndex(BUFFER_CHOICES.index(s["bufferMinutes"]))
@@ -862,6 +873,7 @@ class PlayableDetailPage(DetailBase):
         full, eps = result
         if full:
             self.full = full
+            self.ctx.warm(full)
         d = self.d
         sb = self.verticalScrollBar().value()
         self.clear()
@@ -944,6 +956,8 @@ class ShowDetailPage(DetailBase):
         full, seasons, nxt = result
         if full:
             self.full = full
+        if nxt:
+            self.ctx.warm(nxt)
         d = self.d
         sb = self.verticalScrollBar().value()
         self.clear()
