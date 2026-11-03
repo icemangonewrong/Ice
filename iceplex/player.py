@@ -19,7 +19,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QMenu, QSlider, QToolButton, QVBoxLayout, QWidget, QPushButton)
 
-from . import audiodev, theme
+from . import audiodev, prefetch, theme
 from .config import cache_dir
 from .plex import Item
 from .util import run_bg, time_str
@@ -675,6 +675,9 @@ class PlayerPage(QWidget):
         self.markers: list[dict] = []
         self.pending_subs: list[dict] = []
         self.zoom_scale = 1.0
+        self.preload: Optional[prefetch.Preload] = None
+        self._preload_extras: Optional[tuple] = None   # (key, details, episode after it)
+        self._preload_pending: Optional[str] = None
         self.file_loaded = False
         self.active = False
         self.cur = 0.0
@@ -935,7 +938,16 @@ class PlayerPage(QWidget):
         """Markers, external subtitles and the next episode, fetched while the video starts."""
         client = self.ctx.client
 
+        pre = self._preload_extras
+        if pre and pre[0] == item.key:
+            self._preload_extras = None
+            got_early = (pre[1], pre[2])
+        else:
+            got_early = None
+
         def fetch():
+            if got_early:
+                return got_early
             full = None
             try:
                 full = client.details(item.key)
@@ -1011,10 +1023,74 @@ class PlayerPage(QWidget):
         m = self.video.mpv
         self.file_loaded = False
         url = self.ctx.client.direct_url(self.item)
+        p = self.preload
+        if p and p.key == self.item.key and p.head_len() > 0 and p.size:
+            local = prefetch.url_for(p)
+            if local:
+                url = local
+                p.cancel()   # use what's there; the rest streams from the server
         opts = {"start": f"{at:.3f}"} if at > 1 else {}
         m.loadfile(url, **opts)
         m.pause = False
         self._set_play_icon(True)
+
+    # ------------------------------------------------------------------ next-episode preload
+
+    def _preload_next(self, stream_done: bool):
+        """With 5 minutes or less left, fetch the first ~20 s of the next episode so it starts at once.
+        Only while the current episode has a comfortable cushion buffered, so it never stalls this one."""
+        nxt = self.next_item
+        keep = {k for k in (self.item.key if self.item else None, nxt.key if nxt else None) if k}
+        p = self.preload
+        if p and p.key not in keep:
+            self.preload = None
+            p = None
+        if not nxt or not self.has_played or not self.dur or self.dur - self.cur > prefetch.START_WHEN_LEFT:
+            return
+        if p is None or p.key != nxt.key:
+            if self._preload_pending == nxt.key:
+                return
+            self._preload_pending = nxt.key
+            client = self.ctx.client
+            cur_key = self.item.key
+
+            def prepare():
+                full = client.details(nxt.key) or nxt
+                after = None
+                try:
+                    after = client.episode_after(full)
+                except Exception:
+                    pass
+                return full, after
+
+            def ready(res):
+                self._preload_pending = None
+                full, after = res
+                if not self.active or not self.item or self.item.key != cur_key or not self.next_item \
+                        or self.next_item.key != nxt.key:
+                    return
+                url = client.direct_url(full)
+                size = full.part.get("size")
+                if not url or not size:
+                    return
+                self.next_item = full
+                self._preload_extras = (full.key, full, after)
+                pl = prefetch.Preload(full.key, url, int(size), full.media.get("bitrate"))
+                prefetch.keep_only(keep)
+                prefetch.register(pl)
+                self.preload = pl
+                pl.start()
+
+            def failed(_e):
+                self._preload_pending = None
+
+            run_bg(prepare, ready, failed)
+            return
+        # Pause the preload whenever the current episode needs the bandwidth.
+        if stream_done or self.buffered >= min(prefetch.MIN_CUSHION, max(self.dur - self.cur - 2, 0)):
+            p.allowed.set()
+        else:
+            p.allowed.clear()
 
     def stop(self):
         if not self.active:
@@ -1029,6 +1105,9 @@ class PlayerPage(QWidget):
             pass
         self.item = None
         self.next_item = None
+        self.preload = None
+        self._preload_extras = None
+        prefetch.keep_only(set())
         self.spinner.hide()
         self.up_next.hide()
         self.skip_btn.hide()
@@ -1520,6 +1599,7 @@ class PlayerPage(QWidget):
                 self._finished()
                 return
 
+        self._preload_next(stream_done)
         self._update_markers()
         self._set_play_icon(not paused, buffering)
         if not self.dragging:
