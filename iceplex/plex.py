@@ -163,8 +163,19 @@ class Item:
             if s.get("streamType") == 3 and s.get("key"):
                 out.append({"key": s["key"], "lang": s.get("languageCode") or s.get("language") or "",
                             "title": s.get("displayTitle") or s.get("title") or s.get("language") or "External",
-                            "forced": bool(s.get("forced"))})
+                            "forced": bool(s.get("forced")), "selected": bool(s.get("selected"))})
         return out
+
+    def selected_embedded_subtitle(self) -> Optional[int]:
+        """If you picked a subtitle inside the file in Plex: its position among the file's subtitle
+        tracks (1 = first). None when no embedded subtitle is selected."""
+        n = 0
+        for s in self.part.get("Stream") or []:
+            if s.get("streamType") == 3 and not s.get("key"):
+                n += 1
+                if s.get("selected"):
+                    return n
+        return None
 
     def tags(self, name: str) -> list[str]:
         return [t.get("tag", "") for t in (self.d.get(name) or []) if t.get("tag")]

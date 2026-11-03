@@ -902,6 +902,8 @@ class PlayerPage(QWidget):
         self.up_next.hide()
         self.skip_btn.hide()
         self.sub_delay_ms = 0
+        self._user_picked_sub = False
+        self._embedded_subs = 0
         self.switching = False
         self.dur = item.duration_ms / 1000
         resume = 0.0 if from_start else item.offset_ms / 1000
@@ -969,6 +971,12 @@ class PlayerPage(QWidget):
                 self.markers = full.markers()
                 self.scrub.markers = self.markers
                 self.pending_subs = full.external_subtitles()
+                self._embedded_subs = sum(1 for st in full.part.get("Stream") or []
+                                          if st.get("streamType") == 3 and not st.get("key"))
+                pick = full.selected_embedded_subtitle()
+                if pick and not self._user_picked_sub:
+                    self._set_track("sid", pick)
+                    self._user_picked_sub = False
                 self._add_external_subs()
             self.next_item = nxt
             self.next_btn.setEnabled(nxt is not None)
@@ -987,8 +995,9 @@ class PlayerPage(QWidget):
             if not url:
                 continue
             try:
-                # "auto" = add it to the menu without switching to it
-                self.video.mpv.command_async("sub-add", url, "auto", s["title"], s["lang"])
+                # "auto" = add it to the menu without switching to it; "select" if you picked it in Plex
+                flag = "select" if s.get("selected") and not self._user_picked_sub else "auto"
+                self.video.mpv.command_async("sub-add", url, flag, s["title"], s["lang"])
             except Exception as e:  # noqa: BLE001
                 print("sub-add failed:", e)
 
@@ -1030,6 +1039,9 @@ class PlayerPage(QWidget):
                 url = local
                 p.cancel()   # use what's there; the rest streams from the server
         opts = {"start": f"{at:.3f}"} if at > 1 else {}
+        # Subtitles start off (like Plex), whatever the file marks as default. Plex's own choice for this
+        # video is applied once its details arrive. On a reopen, keep whatever was showing.
+        opts["sid"] = self._reopen_sid()
         m.loadfile(url, **opts)
         m.pause = False
         self._set_play_icon(True)
@@ -1762,7 +1774,20 @@ class PlayerPage(QWidget):
         menu.exec(g - QPoint(menu.sizeHint().width() - self.tracks_btn.width(), menu.sizeHint().height() + 10))
         self.show_controls()
 
+    def _reopen_sid(self) -> str:
+        if not self.file_loaded and not self.has_played:
+            return "no"
+        try:
+            cur = self.video.mpv["sid"]
+        except Exception:
+            cur = None
+        if isinstance(cur, int) and cur <= getattr(self, "_embedded_subs", 0):
+            return str(cur)
+        return "no"
+
     def _set_track(self, prop, value):
+        if prop == "sid":
+            self._user_picked_sub = True
         try:
             self.video.mpv[prop] = value
         except Exception:
