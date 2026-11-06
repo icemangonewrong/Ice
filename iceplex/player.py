@@ -10,6 +10,7 @@ import ctypes
 import locale
 import os
 import shutil
+import sys
 import time
 from typing import Optional
 
@@ -107,6 +108,15 @@ class MpvWidget(QOpenGLWidget):
                 pass
         self.ctx = mpv.MpvRenderContext(self.mpv, "opengl", opengl_init_params={"get_proc_address": self._proc})
         self.ctx.update_cb = self.frame_ready.emit
+        # Tell mpv when each frame actually reached the screen, so it can pace frames evenly.
+        self.frameSwapped.connect(self._swapped)
+
+    def _swapped(self):
+        try:
+            if self.ctx:
+                self.ctx.report_swap()
+        except Exception:
+            pass
 
     def paintGL(self):
         if not self.ctx:
@@ -709,6 +719,12 @@ class PlayerPage(QWidget):
         self.video.installEventFilter(self)
         self.info.installEventFilter(self)
 
+        # Playback info overlay (press I).
+        self.stats = QLabel(self)
+        self.stats.setStyleSheet("background: rgba(10,10,14,0.82); color: #e8e8e8; border-radius: 8px;"
+                                 "padding: 10px 14px; font-family: Consolas, monospace; font-size: 12px;")
+        self.stats.hide()
+
         # Button hints are drawn inside the player. Windows' own tooltips are separate little windows, and
         # one popping up over the video makes the whole screen flash.
         self.hint = QLabel(self)
@@ -1193,6 +1209,8 @@ class PlayerPage(QWidget):
             self.video.mpv.command("stop")
         except Exception:
             pass
+        self._keep_awake(False)
+        self.stats.hide()
         self.item = None
         self.next_item = None
         self.preload = None
@@ -1653,6 +1671,10 @@ class PlayerPage(QWidget):
         self.offline = (now - self.last_data) > 6
 
         playing_now = t is not None and not paused and not idle and not pfc
+        # Keep the screen on (no screen saver / display sleep) while a video plays; let it sleep when paused.
+        self._keep_awake(not paused)
+        if self.stats.isVisible():
+            self._update_stats()
         if playing_now and not seeking:
             if not self.has_played:
                 self.has_played = True
@@ -1854,6 +1876,49 @@ class PlayerPage(QWidget):
         g = self.tracks_btn.mapToGlobal(self.tracks_btn.rect().topLeft())
         menu.exec(g - QPoint(menu.sizeHint().width() - self.tracks_btn.width(), menu.sizeHint().height() + 10))
         self.show_controls()
+
+    _awake = False
+
+    def _keep_awake(self, on: bool):
+        """Windows: stop the display from sleeping / the screen saver while a video is playing."""
+        if sys.platform != "win32" or on == PlayerPage._awake:
+            return
+        PlayerPage._awake = on
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
+        try:
+            ctypes.windll.kernel32.SetThreadExecutionState(
+                ES_CONTINUOUS | ((ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED) if on else 0))
+        except Exception:
+            pass
+
+    @staticmethod
+    def video_playing_now() -> bool:
+        return PlayerPage._awake
+
+    def _update_stats(self):
+        """Playback info (press I): what the player is doing, for tracking down stutters."""
+        g = lambda k, d=None: self._prop(k, d)  # noqa: E731
+        vp = g("video-params", {}) or {}
+        out = g("video-out-params", {}) or {}
+        fps = g("container-fps") or 0
+        disp = g("display-fps") or 0
+        cache = g("demuxer-cache-state", {}) or {}
+        speed = (g("cache-speed") or 0) * 8 / 1e6
+        lines = [
+            f"Video  {vp.get('w', '?')}×{vp.get('h', '?')}  {g('video-codec') or g('video-format') or '?'}  {fps:.3f} fps",
+            f"Audio  {g('audio-codec-name') or '?'}  {g('audio-params/channel-count') or '?'} ch",
+            f"Decoder  {'hardware (' + str(g('hwdec-current')) + ')' if g('hwdec-current') not in (None, '', 'no') else 'software'}",
+            f"Display  {disp:.2f} Hz  ·  output {out.get('w', '?')}×{out.get('h', '?')}",
+            f"Dropped frames  {g('frame-drop-count') or 0} (player)  ·  {g('decoder-frame-drop-count') or 0} (decoder)",
+            f"Delayed frames  {g('vo-delayed-frame-count') or 0}",
+            f"Loaded ahead  {time_str(self.buffered)}  ·  {speed:.1f} Mbps download",
+            f"Video bitrate  {(g('video-bitrate') or 0) / 1e6:.1f} Mbps",
+            f"Graphics  {getattr(self.video, 'renderer', '') or '?'}",
+            "Press I to hide",
+        ]
+        self.stats.setText("\n".join(lines))
+        self.stats.adjustSize()
+        self.stats.move(24, 24)
 
     def _keep_subs_off(self):
         """Subtitles stay off unless you turn one on in Ice. (Files can mark a track as default, and the
@@ -2059,6 +2124,11 @@ class PlayerPage(QWidget):
             self.zoom(-1)
         elif k == Qt.Key_0:
             self.zoom(0)
+        elif k == Qt.Key_I:
+            self.stats.setVisible(not self.stats.isVisible())
+            if self.stats.isVisible():
+                self._update_stats()
+                self.stats.raise_()
         elif k in (Qt.Key_Escape, Qt.Key_Back):
             # Pause and drop to the mini player (it leaves full screen too).
             if self.mode == "full":

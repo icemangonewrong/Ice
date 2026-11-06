@@ -380,6 +380,20 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ events
 
+    def nativeEvent(self, event_type, message):
+        """Windows: block the screen saver and monitor power-off while a video is playing."""
+        if sys.platform == "win32" and event_type == b"windows_generic_MSG":
+            try:
+                import ctypes.wintypes
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                SC_SCREENSAVE, SC_MONITORPOWER = 0xF140, 0xF170
+                if msg.message == 0x0112 and (msg.wParam & 0xFFF0) in (SC_SCREENSAVE, SC_MONITORPOWER) \
+                        and self.player.video_playing_now():
+                    return True, 0
+            except Exception:
+                pass
+        return super().nativeEvent(event_type, message)
+
     def eventFilter(self, obj, e):
         t = e.type()
         if obj is self.root_box and t == QEvent.Resize:
