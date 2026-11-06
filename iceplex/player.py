@@ -90,6 +90,12 @@ class NativeVideo(QWidget):
                            input_vo_keyboard="no", input_cursor="no", cursor_autohide="no", ytdl="no",
                            terminal="no", audio_client_name="Ice")
         _apply_mpv_options(self.mpv)
+        # mpv sees the real display here, so time frames to the monitor and nudge the audio to match
+        # (no dropped frame every minute from audio/display clock drift).
+        try:
+            self.mpv["video-sync"] = "display-resample"
+        except Exception:
+            pass
         self.renderer = "mpv window"
         self.mpv.register_event_callback(self._on_event)
 
