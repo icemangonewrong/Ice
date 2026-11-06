@@ -74,6 +74,7 @@ def _apply_mpv_options(m):
 class NativeVideo(QWidget):
     """A plain native window that mpv draws into directly (its own GPU output, vsync and timing)."""
     mpv_event = Signal(int, int)        # event id, end-file reason
+    mouse = Signal(str)                 # move / click / dbl / up / down, on the picture
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -87,16 +88,24 @@ class NativeVideo(QWidget):
         vo = os.environ.get("ICE_VO") or ("gpu-next,gpu,direct3d" if sys.platform == "win32" else "gpu-next,gpu,x11")
         self.mpv = mpv.MPV(wid=str(int(self.winId())), vo=vo, keep_open="yes", idle="yes",
                            force_window="yes", osc="no", osd_level="0", input_default_bindings="no",
-                           input_vo_keyboard="no", input_cursor="no", cursor_autohide="no", ytdl="no",
+                           input_vo_keyboard="no", input_cursor="yes", cursor_autohide="no", ytdl="no",
                            terminal="no", audio_client_name="Ice")
         _apply_mpv_options(self.mpv)
-        # mpv sees the real display here, so time frames to the monitor and nudge the audio to match
-        # (no dropped frame every minute from audio/display clock drift).
-        try:
-            self.mpv["video-sync"] = "display-resample"
-        except Exception:
-            pass
         self.renderer = "mpv window"
+        # While the controls are hidden nothing sits on top of the video (smoothest), so mouse input on the
+        # picture comes from mpv's own window: map it to messages we pass on as the `mouse` signal.
+        for key, what in (("MOUSE_MOVE", "move"), ("MBTN_LEFT", "click"), ("MBTN_LEFT_DBL", "dbl"),
+                          ("WHEEL_UP", "up"), ("WHEEL_DOWN", "down")):
+            try:
+                self.mpv.keybind(key, f"script-message ice-mouse {what}")
+            except Exception as e:  # noqa: BLE001
+                print("mpv keybind:", e)
+        self.mpv.register_message_handler("ice-mouse", self._mouse_msg)
+
+    def _mouse_msg(self, what=None, *_):
+        if isinstance(what, bytes):
+            what = what.decode("utf-8", "replace")
+        self.mouse.emit(what or "")
         self.mpv.register_event_callback(self._on_event)
 
     def paintEngine(self):
@@ -579,6 +588,7 @@ class PlayerPage(QWidget):
         if NATIVE_VIDEO:
             self.video = NativeVideo(self)
             self.ui = Overlay(self)
+            self.video.mouse.connect(self._video_mouse, Qt.QueuedConnection)
             self._vt = self.ui          # where clicks on the picture arrive
         else:
             self.video = MpvWidget(self)
@@ -807,18 +817,64 @@ class PlayerPage(QWidget):
             # Keep the floating controls glued to the player as the window moves, resizes, minimizes.
             QTimer.singleShot(0, lambda: self.window().installEventFilter(self))
 
+    def _set_mpv_cursor(self, visible: bool):
+        try:
+            self.video.mpv["cursor-autohide"] = "no" if visible else "always"
+        except Exception:
+            pass
+
     def _all_children(self):
         kids = self.findChildren(QWidget)
         if self.ui is not self:
             kids += [self.ui] + self.ui.findChildren(QWidget)
         return kids
 
+    def _overlay_needed(self) -> bool:
+        """Is anything showing on top of the video? If not, the controls window is taken off the screen so
+        the video is drawn with nothing over it."""
+        if self.mode == "mini" or self.controls_shown:
+            return True
+        return any(not w.isHidden() for w in (self.skip_btn, self.up_next, self.spinner, self.status,
+                                              self.signal_pill, self.toast, self.error_box, self.stats))
+
+    def _video_mouse(self, what: str):
+        """Mouse on the picture while the controls window is off the screen (it comes from mpv's window)."""
+        if not self.active:
+            return
+        if what in ("click", "dbl"):
+            self._take_keyboard()
+        if self.mode == "mini":
+            if what == "click":
+                self.expand()
+            elif what in ("up", "down"):
+                self.change_volume(5 if what == "up" else -5)
+            return
+        if what == "move":
+            self.show_controls()
+        elif what == "click":
+            self.show_controls()
+            self.click_timer.start()
+        elif what == "dbl":
+            self.click_timer.stop()
+            self.toggle_fullscreen.emit()
+        elif what in ("up", "down"):
+            self.change_volume(5 if what == "up" else -5)
+
+    def _take_keyboard(self):
+        """A click on mpv's window gives it the keyboard; hand it back so the shortcuts keep working."""
+        if sys.platform == "win32":
+            try:
+                ctypes.windll.user32.SetFocus(int(self.window().winId()))
+            except Exception:
+                pass
+        self.setFocus()
+
     def _sync_ui(self):
         """Native video: place the controls window exactly over the player (or hide it with the player)."""
         if self.ui is self:
             return
         win = self.window()
-        if self.isVisible() and win.isVisible() and not win.isMinimized():
+        if self.isVisible() and win.isVisible() and not win.isMinimized() and self._overlay_needed():
             r = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
             if self.ui.geometry() != r:
                 self.ui.setGeometry(r)
@@ -1824,6 +1880,7 @@ class PlayerPage(QWidget):
 
         self._keep_subs_off()
         self._prefer_english_audio()
+        self._sync_ui()
         self._preload_next(stream_done)
         self._update_markers()
         self._set_play_icon(not paused, buffering)
@@ -2107,6 +2164,9 @@ class PlayerPage(QWidget):
             self.spinner.raise_()
         self.unsetCursor()
         self._vt.unsetCursor()
+        if self.ui is not self:
+            self._set_mpv_cursor(True)
+            self._sync_ui()
         self.hide_timer.start(self.HIDE_AFTER_MS)
 
     def hide_controls(self):
@@ -2120,7 +2180,10 @@ class PlayerPage(QWidget):
         self.scrub.tip.hide()
         self.setCursor(Qt.BlankCursor)
         self._vt.setCursor(Qt.BlankCursor)
+        if self.ui is not self:
+            self._set_mpv_cursor(False)
         self._place_floating()
+        self._sync_ui()
 
     def _auto_hide(self):
         if not self.active or self.dragging or self.error_box.isVisible() or self.mode == "mini":
