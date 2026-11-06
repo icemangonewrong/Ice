@@ -108,15 +108,6 @@ class MpvWidget(QOpenGLWidget):
                 pass
         self.ctx = mpv.MpvRenderContext(self.mpv, "opengl", opengl_init_params={"get_proc_address": self._proc})
         self.ctx.update_cb = self.frame_ready.emit
-        # Tell mpv when each frame actually reached the screen, so it can pace frames evenly.
-        self.frameSwapped.connect(self._swapped)
-
-    def _swapped(self):
-        try:
-            if self.ctx:
-                self.ctx.report_swap()
-        except Exception:
-            pass
 
     def paintGL(self):
         if not self.ctx:
@@ -1901,7 +1892,8 @@ class PlayerPage(QWidget):
         vp = g("video-params", {}) or {}
         out = g("video-out-params", {}) or {}
         fps = g("container-fps") or 0
-        disp = g("display-fps") or 0
+        scr = self.screen() or QApplication.primaryScreen()
+        disp = scr.refreshRate() if scr else 0
         cache = g("demuxer-cache-state", {}) or {}
         speed = (g("cache-speed") or 0) * 8 / 1e6
         lines = [
