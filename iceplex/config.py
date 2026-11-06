@@ -57,6 +57,9 @@ class Settings:
         "muted": False,
         "geometry": None,
         "maximized": False,
+        # Smooth playback (Windows), as in Plex's / Jellyfin's desktop players:
+        "syncMode": "display-resample",   # "audio" = time frames to the audio (may drop a frame now and then)
+        "matchRefresh": True,             # full screen: switch the monitor to a rate that fits the video
     }
 
     def __init__(self):

@@ -20,7 +20,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QMenu, QSlider, QToolButton, QVBoxLayout, QWidget, QPushButton)
 
-from . import audiodev, prefetch, theme
+from . import audiodev, prefetch, refresh, theme
 from .config import cache_dir
 from .plex import Item
 from .util import run_bg, time_str
@@ -589,6 +589,7 @@ class PlayerPage(QWidget):
             self.video = NativeVideo(self)
             self.ui = Overlay(self)
             self.video.mouse.connect(self._video_mouse, Qt.QueuedConnection)
+            self.apply_sync_mode()
             self._vt = self.ui          # where clicks on the picture arrive
         else:
             self.video = MpvWidget(self)
@@ -828,6 +829,67 @@ class PlayerPage(QWidget):
         if self.ui is not self:
             kids += [self.ui] + self.ui.findChildren(QWidget)
         return kids
+
+    # ------------------------------------------------------------------ smooth playback (Windows)
+
+    _refresh_device: Optional[str] = None     # display we switched the refresh rate on
+    _refresh_hz: Optional[int] = None
+    _refresh_checked = None                    # (device, fps) last decided for
+
+    def apply_sync_mode(self):
+        """Resample (default): time frames to the monitor and nudge the audio to match, so no frame is
+        dropped; Audio: time frames to the audio (may drop one now and then). Same choice as Jellyfin's player."""
+        if not NATIVE_VIDEO:
+            return
+        mode = self.ctx.settings["syncMode"] or "display-resample"
+        try:
+            self.video.mpv["video-sync"] = mode
+        except Exception as e:  # noqa: BLE001
+            print("video-sync:", e)
+
+    def _match_refresh(self):
+        """Full screen + playing: switch the monitor to a refresh rate the video's frame rate divides evenly
+        into (e.g. 24 fps -> 48/72/120/144 Hz), if it has one; put it back otherwise."""
+        if sys.platform != "win32" or not NATIVE_VIDEO:
+            return
+        win = self.window()
+        fps = 0.0
+        if (self.ctx.settings["matchRefresh"] and self.active and self.has_played and self.mode == "full"
+                and win.isFullScreen() and not win.isMinimized()):
+            fps = float(self._prop("container-fps") or self._prop("estimated-vf-fps") or 0)
+        scr = win.screen() or QApplication.primaryScreen()
+        dev = scr.name() if scr else None
+        if not fps or fps > 100 or not dev:
+            self._refresh_checked = None
+            self._restore_refresh()
+            return
+        key = (dev, round(fps, 3))
+        if self._refresh_checked == key:
+            return
+        self._refresh_checked = key
+        if self._refresh_device and self._refresh_device != dev:
+            self._restore_refresh()
+        try:
+            tol = 0.005 if (self.ctx.settings["syncMode"] or "display-resample") == "display-resample" else 0.001
+            hz = refresh.best_rate(dev, fps, tol)
+            if hz:
+                if refresh.switch(dev, hz):
+                    self._refresh_device, self._refresh_hz = dev, hz
+                    self._toast(f"Screen set to {hz} Hz to match the video", 2500)
+            elif self._refresh_device:
+                cur = refresh.current(dev)
+                if cur and not refresh.is_multiple(refresh._real_hz(cur[2]), fps, tol):
+                    self._restore_refresh()
+        except Exception as e:  # noqa: BLE001
+            print("refresh switch:", e)
+
+    def _restore_refresh(self):
+        if self._refresh_device:
+            try:
+                refresh.restore(self._refresh_device)
+            except Exception as e:  # noqa: BLE001
+                print("refresh restore:", e)
+            self._refresh_device = self._refresh_hz = None
 
     def _overlay_needed(self) -> bool:
         """Is anything showing on top of the video? If not, the controls window is taken off the screen so
@@ -1402,6 +1464,8 @@ class PlayerPage(QWidget):
 
     def shutdown(self):
         """App is closing."""
+        self._restore_refresh()
+        self._keep_awake(False)
         if self.active:
             item, t, d = self.item, self.cur, self.dur
             if item:
@@ -1881,6 +1945,7 @@ class PlayerPage(QWidget):
         self._keep_subs_off()
         self._prefer_english_audio()
         self._sync_ui()
+        self._match_refresh()
         self._preload_next(stream_done)
         self._update_markers()
         self._set_play_icon(not paused, buffering)
@@ -2078,6 +2143,8 @@ class PlayerPage(QWidget):
             f"Decoder  {'hardware (' + str(g('hwdec-current')) + ')' if g('hwdec-current') not in (None, '', 'no') else 'software'}",
             f"Display  {disp:.2f} Hz  ·  output {out.get('w', '?')}×{out.get('h', '?')}",
             f"Dropped frames  {g('frame-drop-count') or 0} (player)  ·  {g('decoder-frame-drop-count') or 0} (decoder)",
+            f"Sync  {g('video-sync') or '?'}"
+            + (f"  ·  screen switched to {self._refresh_hz} Hz" if self._refresh_hz else ""),
             f"Delayed frames  {g('vo-delayed-frame-count') or 0}",
             f"Loaded ahead  {time_str(self.buffered)}  ·  {speed:.1f} Mbps download",
             f"Video bitrate  {(g('video-bitrate') or 0) / 1e6:.1f} Mbps",

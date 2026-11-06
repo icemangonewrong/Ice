@@ -1,6 +1,7 @@
 """All the screens except the player."""
 from __future__ import annotations
 
+import sys
 import time
 from typing import Optional
 
@@ -613,6 +614,41 @@ class SettingsPage(ScrollPage):
         self.body.addWidget(tap)
         note = label("When this is off, clicking the video just shows or hides the control bar.", "Muted", wrap=True)
         self.body.addWidget(note)
+
+        if sys.platform == "win32":
+            self.section("Smooth playback", "How the player keeps motion smooth. Same options as Plex's and "
+                                            "Jellyfin's desktop players.")
+            row = QHBoxLayout()
+            row.addWidget(label("Sync mode"))
+            row.addSpacing(12)
+            sync = NoWheelCombo()
+            modes = [("Resample (smoothest)", "display-resample"), ("Audio (never adjusts the sound)", "audio")]
+            for text, val in modes:
+                sync.addItem(text, val)
+            cur = s["syncMode"] or "display-resample"
+            sync.setCurrentIndex(max(0, sync.findData(cur)))
+
+            def set_sync(_i, combo=sync):
+                self.ctx.settings["syncMode"] = combo.currentData()
+                try:
+                    self.ctx.window.player.apply_sync_mode()
+                except Exception:
+                    pass
+            sync.currentIndexChanged.connect(set_sync)
+            row.addWidget(sync)
+            row.addStretch()
+            self.body.addLayout(row)
+            self.body.addWidget(label("Resample times the picture to your monitor and adjusts the sound by an "
+                                      "unnoticeable amount, so frames are never dropped. Audio times the picture "
+                                      "to the sound and may drop a frame now and then.", "Muted", wrap=True))
+            match = QCheckBox("Match the monitor's refresh rate to the video in full screen")
+            match.setChecked(bool(s["matchRefresh"]))
+            match.toggled.connect(lambda on: self.ctx.settings.__setitem__("matchRefresh", on))
+            self.body.addWidget(match)
+            self.body.addWidget(label("For example 24 fps films switch the monitor to 48, 72, 120 or 144 Hz if it "
+                                      "offers one, so every frame lasts the same time. The screen may go dark "
+                                      "for a second when it switches. Only in full screen; put back when you "
+                                      "leave full screen or stop.", "Muted", wrap=True))
 
         delays = s["audioDelays"] or {}
         self.section("Audio delay", "Set from the player's audio delay button. Each audio device keeps its own "
