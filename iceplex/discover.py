@@ -637,6 +637,9 @@ class GridPage(ScrollPage):
         head = QHBoxLayout()
         head.setSpacing(8)
         head.addWidget(label(title, "H1"))
+        self.count = label("", "Muted")
+        self.count.setFont(theme.font(12))
+        head.addWidget(self.count, 0, Qt.AlignBottom)
         head.addSpacing(18)
         self.chips = {}
         if len(kinds) > 1:
@@ -682,6 +685,7 @@ class GridPage(ScrollPage):
         self.page, self.pages, self.loading = 0, None, False
         self.seen: set = set()
         self.msg.hide()
+        self.count.setText("")
         self.load_more()
 
     def _fetch(self, page: int):
@@ -733,6 +737,13 @@ class GridPage(ScrollPage):
         self.loading = False
         self.spinner.hide()
         self.page, self.pages = page, min(pages, 30)
+        total = getattr(results, "total", None)
+        if page == 1:
+            if total:
+                word = "title" if "_trending" in self.filters else {"movie": "movie", "tv": "show"}.get(self.kind, "title")
+                self.count.setText(f"·  {total:,} {word}{'' if total == 1 else 's'}")
+            else:
+                self.count.setText("")
         for r in results:
             k = (r["kind"], r["id"])
             if k in self.seen:

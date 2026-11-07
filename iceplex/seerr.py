@@ -40,6 +40,11 @@ RETRY_WAITS = (1.5, 3.0)   # a connection that is still coming up (WireGuard) ge
 STATUS_TEXT = {PENDING: "Requested", PROCESSING: "Requested", PARTIAL: "Partly available", AVAILABLE: "Available"}
 
 
+class Results(list):
+    """A page of results; .total is how many there are in all (when Seerr says)."""
+    total = None
+
+
 class SeerrError(Exception):
     pass
 
@@ -156,7 +161,8 @@ class Seerr:
         q = "&".join(f"{k}={requests.utils.quote(str(v), safe=',|')}" for k, v in params.items() if v not in (None, ""))
         sep = "&" if "?" in path else "?"
         data = self._call("GET", f"{path}{sep}page={page}" + (f"&{q}" if q else ""))
-        out = [x for x in (self.result(r) for r in data.get("results") or []) if x]
+        out = Results(x for x in (self.result(r) for r in data.get("results") or []) if x)
+        out.total = data.get("totalResults")
         return out, int(data.get("totalPages") or 1)
 
     # -- Discover -----------------------------------------------------------------
