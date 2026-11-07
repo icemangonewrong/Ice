@@ -13,8 +13,8 @@ from . import theme
 from .config import BUFFER_CHOICES
 from .plex import Item
 from .util import run_bg, runtime_str, size_str
-from .widgets import (Backdrop, CardRow, ClickRow, FlowLayout, ImageBox, PosterCard, ScrollPage, Spinner,
-                      centered, label)
+from .widgets import (Backdrop, CardRow, ClickRow, FlowLayout, ImageBox, LinkLabel, PosterCard, ScrollPage,
+                      Spinner, centered, label)
 
 
 def resource_path(name: str) -> str:
@@ -725,7 +725,8 @@ class DetailBase(ScrollPage):
     def d(self) -> Item:
         return self.full or self.item
 
-    def header(self, backdrop_path, poster_path, top_line, title, sub_lines, poster=True) -> Backdrop:
+    def header(self, backdrop_path, poster_path, top_line, title, sub_lines, poster=True,
+               top_opens: Optional[Item] = None, first_sub_opens: Optional[Item] = None) -> Backdrop:
         bd = Backdrop(420)
         bd.set_url(self.ctx.client.image_url(backdrop_path, 1920, 1080))
         h = QHBoxLayout(bd)
@@ -739,13 +740,23 @@ class DetailBase(ScrollPage):
         col.setSpacing(6)
         col.addStretch()
         if top_line:
-            col.addWidget(label(top_line, "Accent"))
+            if top_opens:
+                tl = LinkLabel(top_line, "Accent")
+                tl.clicked.connect(lambda: self.ctx.open(top_opens))
+                col.addWidget(tl, 0, Qt.AlignLeft)
+            else:
+                col.addWidget(label(top_line, "Accent"))
         t = label(title, "H1", wrap=True)
         t.setMaximumWidth(900)
         col.addWidget(t)
-        for s in sub_lines:
+        for i, s in enumerate(sub_lines):
             if s:
-                col.addWidget(label(s, "Muted"))
+                if i == 0 and first_sub_opens:
+                    sl = LinkLabel(s, "Muted")
+                    sl.clicked.connect(lambda: self.ctx.open(first_sub_opens))
+                    col.addWidget(sl, 0, Qt.AlignLeft)
+                else:
+                    col.addWidget(label(s, "Muted"))
         h.addLayout(col, 1)
         return bd
 
@@ -883,7 +894,8 @@ class PlayableDetailPage(DetailBase):
             sub = [f"Season {d.get('parentIndex')} · Episode {d.get('index')}"
                    if d.get("parentIndex") is not None else "", meta_line(d)]
             self.add(self.header(d.get("art") or d.get("grandparentArt") or d.get("thumb"),
-                                 d.get("grandparentThumb"), d.get("grandparentTitle"), d.title, sub, poster=True))
+                                 d.get("grandparentThumb"), d.get("grandparentTitle"), d.title, sub, poster=True,
+                                 top_opens=d.show_item(), first_sub_opens=d.season_item() if sub[0] else None))
         else:
             self.add(self.header(d.get("art"), d.get("thumb"), d.get("tagline") or "", d.title,
                                  [meta_line(d), genres]))
@@ -1014,7 +1026,8 @@ class SeasonDetailPage(DetailBase):
         sb = self.verticalScrollBar().value()
         self.clear()
         self.add(self.header(d.get("art") or d.get("parentArt"), d.get("thumb") or d.get("parentThumb"),
-                             d.get("parentTitle") or "", d.title or "Season", [f"{len(eps)} episodes"]))
+                             d.get("parentTitle") or "", d.title or "Season", [f"{len(eps)} episodes"],
+                             top_opens=d.show_item()))
         row = QHBoxLayout()
         row.setContentsMargins(32, 0, 32, 0)
         row.addWidget(self.watched_button(d))

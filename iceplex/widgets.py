@@ -182,6 +182,36 @@ class ImageBox(QWidget):
 # Poster card (click -> open info page)
 # ---------------------------------------------------------------------------
 
+class LinkLabel(QLabel):
+    """Text that opens something when clicked (underlines in the accent colour on hover)."""
+    clicked = Signal()
+
+    def __init__(self, text: str = "", name: Optional[str] = None):
+        super().__init__(text)
+        if name:
+            self.setObjectName(name)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def enterEvent(self, e):
+        f = self.font()
+        f.setUnderline(True)
+        self.setFont(f)
+        self.setStyleSheet(f"color: {theme.ORANGE};")
+
+    def leaveEvent(self, e):
+        f = self.font()
+        f.setUnderline(False)
+        self.setFont(f)
+        self.setStyleSheet("")
+
+    def mousePressEvent(self, e):
+        e.accept()   # keep the click here (not the poster card around it)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+
+
 class PosterCard(QWidget):
     clicked = Signal(object)
 
@@ -202,14 +232,29 @@ class PosterCard(QWidget):
         self.img.rating = item.imdb_rating
         self.img.highlight = current
         lay.addWidget(self.img)
-        t = label(title if title is not None else item.display_title)
+        # Like Plex: under an episode, the show name opens the show (all seasons) and "S2 · E5" opens that
+        # season's episodes; under a season, the show name opens the show. The picture opens the item itself.
+        title_to = sub_to = None
+        if title is None and subtitle is None:
+            if item.type == "episode":
+                title_to, sub_to = item.show_item(), item.season_item()
+            elif item.type == "season":
+                sub_to = item.show_item()
+        t = LinkLabel(title if title is not None else item.display_title) if title_to else \
+            label(title if title is not None else item.display_title)
+        if title_to:
+            t.clicked.connect(lambda: self.clicked.emit(title_to))
         t.setFont(theme.font(10, QFont.DemiBold))
         t.setFixedWidth(width)
         t.setText(t.fontMetrics().elidedText(t.text(), Qt.ElideRight, width))
         lay.addWidget(t)
         sub = subtitle if subtitle is not None else item.display_subtitle
         if sub:
-            s = label(sub, "Muted")
+            if sub_to:
+                s = LinkLabel(sub, "Muted")
+                s.clicked.connect(lambda: self.clicked.emit(sub_to))
+            else:
+                s = label(sub, "Muted")
             s.setFont(theme.font(9))
             s.setFixedWidth(width)
             s.setText(s.fontMetrics().elidedText(sub, Qt.ElideRight, width))
@@ -232,6 +277,9 @@ class PosterCard(QWidget):
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
             self.clicked.emit(self.item)
+
+    def mousePressEvent(self, e):
+        e.accept()
 
 
 # ---------------------------------------------------------------------------

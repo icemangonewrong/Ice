@@ -56,6 +56,30 @@ class Item:
             return self.d["grandparentTitle"]
         return self.title or "Untitled"
 
+    def show_item(self) -> Optional["Item"]:
+        """The show an episode or season belongs to (enough to open its page)."""
+        d = self.d
+        if self.type == "episode" and d.get("grandparentRatingKey"):
+            return Item({"ratingKey": d["grandparentRatingKey"], "type": "show", "title": d.get("grandparentTitle"),
+                         "thumb": d.get("grandparentThumb"), "art": d.get("grandparentArt")})
+        if self.type == "season" and d.get("parentRatingKey"):
+            return Item({"ratingKey": d["parentRatingKey"], "type": "show", "title": d.get("parentTitle"),
+                         "thumb": d.get("parentThumb"), "art": d.get("art")})
+        return None
+
+    def season_item(self) -> Optional["Item"]:
+        """The season an episode belongs to (enough to open its episode list)."""
+        d = self.d
+        if self.type == "episode" and d.get("parentRatingKey"):
+            idx = d.get("parentIndex")
+            return Item({"ratingKey": d["parentRatingKey"], "type": "season",
+                         "title": d.get("parentTitle") or (f"Season {idx}" if idx is not None else "Season"),
+                         "index": idx, "parentTitle": d.get("grandparentTitle"),
+                         "parentRatingKey": d.get("grandparentRatingKey"),
+                         "thumb": d.get("parentThumb") or d.get("grandparentThumb"),
+                         "art": d.get("grandparentArt")})
+        return None
+
     @property
     def episode_code(self) -> str:
         parts = []
