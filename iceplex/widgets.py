@@ -113,6 +113,7 @@ class ImageBox(QWidget):
         self.check = False
         self.highlight = False
         self.rating: Optional[float] = None   # IMDb score badge
+        self.status: Optional[str] = None     # "lib" (green check: in your library) or "req" (amber clock: requested)
         self.placeholder = "film"
 
     def set_url(self, url: Optional[str]):
@@ -160,6 +161,24 @@ class ImageBox(QWidget):
             p.setPen(pen)
             p.drawLine(cr.left() + d * .26, cr.top() + d * .52, cr.left() + d * .44, cr.top() + d * .70)
             p.drawLine(cr.left() + d * .44, cr.top() + d * .70, cr.left() + d * .76, cr.top() + d * .32)
+        if self.status in ("lib", "req"):
+            d = 24
+            cr = QRectF(r.width() - d - 6, 6, d, d)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#22a447" if self.status == "lib" else "#d98a00"))
+            p.drawEllipse(cr)
+            pen = QPen(QColor("white"), 2.4)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            if self.status == "lib":
+                p.drawLine(cr.left() + d * .26, cr.top() + d * .52, cr.left() + d * .44, cr.top() + d * .70)
+                p.drawLine(cr.left() + d * .44, cr.top() + d * .70, cr.left() + d * .76, cr.top() + d * .32)
+            else:
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(cr.adjusted(d * .2, d * .2, -d * .2, -d * .2))
+                c = cr.center()
+                p.drawLine(c.x(), c.y(), c.x(), c.y() - d * .18)
+                p.drawLine(c.x(), c.y(), c.x() + d * .13, c.y() + d * .08)
         if self.rating is not None:
             f = QFont(theme.font(8.5 if self.width() < 170 else 9.5, QFont.Bold))
             p.setFont(f)
@@ -357,7 +376,7 @@ class CardRow(QWidget):
             h.addWidget(c, 0, Qt.AlignTop)
         h.addStretch()
         self.scroll.setWidget(inner)
-        tallest = max((c.sizeHint().height() for c in cards), default=100)
+        tallest = max((max(c.sizeHint().height(), c.minimumHeight()) for c in cards), default=100)
         self.scroll.setFixedHeight(tallest + 6)
         v.addWidget(self.scroll)
 

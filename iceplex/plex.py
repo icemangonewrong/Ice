@@ -99,9 +99,10 @@ class Item:
             return " · ".join(parts)
         if t == "season":
             return self.d.get("parentTitle") or ""
-        if self.d.get("year"):
-            return str(self.d["year"])
-        return ""
+        parts = [str(self.d["year"])] if self.d.get("year") else []
+        if self.d.get("contentRating"):
+            parts.append(str(self.d["contentRating"]))
+        return " · ".join(parts)
 
     @property
     def poster_path(self) -> Optional[str]:
@@ -133,8 +134,25 @@ class Item:
         return (self.d.get("viewCount") or 0) > 0
 
     @property
+    def imdb_id(self) -> Optional[str]:
+        """tt1234567, from the item's Guid list (asked for with includeGuids=1)."""
+        for g in self.d.get("Guid") or []:
+            gid = str(g.get("id") or "")
+            if gid.startswith("imdb://"):
+                return gid[7:]
+        guid = str(self.d.get("guid") or "")
+        if "imdb://" in guid:   # old-style agent: com.plexapp.agents.imdb://tt123?lang=en
+            return guid.split("imdb://", 1)[1].split("?")[0]
+        return None
+
+    @property
     def imdb_rating(self) -> Optional[float]:
-        """The IMDb score, when the server has one (library's ratings source set to IMDb, or listed in Rating)."""
+        """The IMDb score: from IMDb's daily ratings file (works for every library and every episode),
+        otherwise whatever the server has (library's ratings source set to IMDb)."""
+        from . import imdb
+        v = imdb.rating(self.imdb_id)
+        if v is not None:
+            return v
         for r in self.d.get("Rating") or []:
             if str(r.get("image") or "").startswith("imdb://") and r.get("value") is not None:
                 try:
@@ -297,6 +315,8 @@ class PlexClient:
     # -- server requests (fail over between addresses) -------------------------
 
     def get(self, path: str, params=None, timeout=15) -> dict:
+        params = dict(params or {})
+        params.setdefault("includeGuids", 1)   # IMDb IDs, for the IMDb ratings
         s = self.server
         if not s:
             raise PlexError("No Plex server selected.")

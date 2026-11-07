@@ -475,6 +475,14 @@ class SearchPage(ScrollPage):
         self.grid = QWidget()
         self.flow = FlowLayout(self.grid, spacing=20)
         self.body.addWidget(self.grid)
+        # People (actors, directors) from Seerr.
+        self.people_head = label("People", "H2")
+        self.people_head.hide()
+        self.body.addSpacing(10)
+        self.body.addWidget(self.people_head)
+        self.people_grid = QWidget()
+        self.people_flow = FlowLayout(self.people_grid, spacing=14)
+        self.body.addWidget(self.people_grid)
         # Everything else (not in the library), from Seerr, to request.
         self.req_head = label("Not in your library · request with Seerr", "H2")
         self.req_head.hide()
@@ -504,6 +512,7 @@ class SearchPage(ScrollPage):
         if len(text) < 2:
             self._fill([])
             self._fill_requests([])
+            self._got_people(gen, [])
             self.req_head.hide()
             self.req_msg.hide()
             self.msg.setText("")
@@ -515,6 +524,25 @@ class SearchPage(ScrollPage):
         if sr:
             run_bg(lambda: sr.search(text), lambda r: self._got_requests(gen, r),
                    lambda e: self._got_requests(gen, None, str(e)))
+            run_bg(lambda: sr.search_people(text), lambda r: self._got_people(gen, r), lambda e: None)
+        else:
+            self._got_people(gen, [])
+
+    def _got_people(self, gen, people):
+        if gen != self._gen:
+            return
+        from .discover import CastCard, open_person
+        while self.people_flow.count():
+            it = self.people_flow.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        people = [p for p in people or [] if p.get("photo")][:12] or (people or [])[:6]
+        self.people_head.setVisible(bool(people))
+        dept = {"Acting": "Actor", "Directing": "Director", "Writing": "Writer", "Production": "Producer"}
+        for p in people:
+            c = CastCard(p["name"], dept.get(p.get("dept"), p.get("dept") or ""), p.get("photo"), 120)
+            c.clicked.connect(lambda p=p: open_person(self.ctx, p["id"], p["name"]))
+            self.people_flow.addWidget(c)
 
     def _got_requests(self, gen, results, error=None):
         if gen != self._gen:
@@ -536,9 +564,10 @@ class SearchPage(ScrollPage):
             it = self.req_flow.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
+        from .discover import SeerrCard, open_result
         for r in results:
-            c = RequestCard(r)
-            c.clicked.connect(lambda r=r: self.ctx.push(RequestPage(self.ctx, r)))
+            c = SeerrCard(self.ctx, r)
+            c.clicked.connect(lambda r: open_result(self.ctx, r))
             self.req_flow.addWidget(c)
 
     def _got(self, gen, items):
@@ -559,7 +588,7 @@ class SearchPage(ScrollPage):
                 c = PosterCard(it, self.ctx.client, 160, title=it.title,
                                subtitle=f"{it.display_title} · {it.episode_code}")
             else:
-                sub = {"show": "TV show", "movie": str(it.get("year") or "Movie")}.get(it.type, "")
+                sub = it.display_subtitle or {"show": "TV show", "movie": "Movie"}.get(it.type, "")
                 c = PosterCard(it, self.ctx.client, 160, subtitle=sub)
             c.clicked.connect(self.ctx.open)
             self.flow.addWidget(c)
@@ -764,6 +793,13 @@ class SettingsPage(ScrollPage):
 # Info pages
 # ===========================================================================
 
+def imdb_badge(score: float, size: float = 10.5) -> QLabel:
+    b = QLabel(f"IMDb  {score:.1f}")
+    b.setFont(theme.font(size, QFont.Bold))
+    b.setStyleSheet("background: #f5c518; color: black; border-radius: 4px; padding: 2px 7px;")
+    return b
+
+
 def meta_line(item: Item, seasons: int = 0) -> str:
     parts = []
     if item.get("year"):
@@ -775,9 +811,6 @@ def meta_line(item: Item, seasons: int = 0) -> str:
             parts.append("1 season" if seasons == 1 else f"{seasons} seasons")
     elif item.duration_ms:
         parts.append(runtime_str(item.duration_ms))
-    score = item.get("audienceRating") or item.get("rating")
-    if score:
-        parts.append(f"★ {float(score):.1f}")
     return "  ·  ".join(parts)
 
 
@@ -798,7 +831,8 @@ class DetailBase(ScrollPage):
         return self.full or self.item
 
     def header(self, backdrop_path, poster_path, top_line, title, sub_lines, poster=True,
-               top_opens: Optional[Item] = None, first_sub_opens: Optional[Item] = None) -> Backdrop:
+               top_opens: Optional[Item] = None, first_sub_opens: Optional[Item] = None,
+               imdb: Optional[float] = None) -> Backdrop:
         bd = Backdrop(420)
         bd.set_url(self.ctx.client.image_url(backdrop_path, 1920, 1080))
         h = QHBoxLayout(bd)
@@ -821,6 +855,8 @@ class DetailBase(ScrollPage):
         t = label(title, "H1", wrap=True)
         t.setMaximumWidth(900)
         col.addWidget(t)
+        if imdb is not None:
+            col.addWidget(imdb_badge(imdb), 0, Qt.AlignLeft)
         for i, s in enumerate(sub_lines):
             if s:
                 if i == 0 and first_sub_opens:
@@ -857,30 +893,28 @@ class DetailBase(ScrollPage):
         return None
 
     def credits(self, item: Item) -> Optional[QWidget]:
-        directors = item.tags("Director")
-        roles = (item.get("Role") or [])[:12]
-        if not directors and not roles:
-            return None
+        """Director / writers as links to their pages."""
+        from .discover import link_line, open_person
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(6)
-        if directors:
-            v.addWidget(label("Directed by", "Muted"))
-            v.addWidget(label(", ".join(directors)))
-            v.addSpacing(8)
-        if roles:
-            v.addWidget(label("Cast", "H3"))
-            g = QGridLayout()
-            g.setHorizontalSpacing(18)
-            g.setVerticalSpacing(4)
-            for i, r in enumerate(roles):
-                g.addWidget(label(r.get("tag", "")), i, 0)
-                g.addWidget(label(r.get("role") or "", "Muted"), i, 1)
-            g.setColumnStretch(2, 1)
-            v.addLayout(g)
+        n = 0
+        for tag, one, many in (("Director", "Director", "Directors"), ("Writer", "Writer", "Writers")):
+            names = item.tags(tag)[:4]
+            if names:
+                v.addWidget(link_line(self.ctx, one if len(names) == 1 else many,
+                                      [(nm, lambda nm=nm: open_person(self.ctx, None, nm)) for nm in names]))
+                n += 1
+        if item.get("studio") and item.type != "episode":
+            v.addWidget(label(f"Studio      {item.get('studio')}", "Muted"))
+            n += 1
         v.addStretch()
-        return w
+        return w if n else None
+
+    def cast(self, item: Item) -> Optional[QWidget]:
+        from .discover import cast_row, plex_cast
+        return cast_row(self.ctx, plex_cast(item))
 
     def file_info(self, item: Item) -> Optional[QWidget]:
         m = item.media
@@ -967,10 +1001,11 @@ class PlayableDetailPage(DetailBase):
                    if d.get("parentIndex") is not None else "", meta_line(d)]
             self.add(self.header(d.get("art") or d.get("grandparentArt") or d.get("thumb"),
                                  d.get("grandparentThumb"), d.get("grandparentTitle"), d.title, sub, poster=True,
-                                 top_opens=d.show_item(), first_sub_opens=d.season_item() if sub[0] else None))
+                                 top_opens=d.show_item(), first_sub_opens=d.season_item() if sub[0] else None,
+                                 imdb=d.imdb_rating))
         else:
             self.add(self.header(d.get("art"), d.get("thumb"), d.get("tagline") or "", d.title,
-                                 [meta_line(d), genres]))
+                                 [meta_line(d), genres], imdb=d.imdb_rating))
 
         # Play buttons + progress
         row = QHBoxLayout()
@@ -1001,6 +1036,7 @@ class PlayableDetailPage(DetailBase):
         wrap.setLayout(row)
         self.add(wrap)
 
+        self.add(self.cast(d))
         self.add(self.summary(d.get("summary")))
         self.add(self.two_columns(self.credits(d), self.file_info(d)))
 
@@ -1046,7 +1082,7 @@ class ShowDetailPage(DetailBase):
         sb = self.verticalScrollBar().value()
         self.clear()
         self.add(self.header(d.get("art"), d.get("thumb"), d.get("studio") or "", d.title,
-                             [meta_line(d, len(seasons)), "  ·  ".join(d.tags("Genre")[:4])]))
+                             [meta_line(d, len(seasons)), "  ·  ".join(d.tags("Genre")[:4])], imdb=d.imdb_rating))
         row = QHBoxLayout()
         row.setContentsMargins(32, 0, 32, 0)
         row.setSpacing(12)
@@ -1064,6 +1100,7 @@ class ShowDetailPage(DetailBase):
         wrap = QWidget()
         wrap.setLayout(row)
         self.add(wrap)
+        self.add(self.cast(d))
         self.add(self.summary(d.get("summary")))
         if seasons:
             cards = []
@@ -1072,6 +1109,7 @@ class ShowDetailPage(DetailBase):
                 c = PosterCard(s, self.ctx.client, 160, title=s.title or "Season",
                                subtitle=f"{n} episodes" if n else "",
                                image_path=s.get("thumb") or d.get("thumb"))
+                c.img.rating = d.imdb_rating   # seasons have no score of their own: show the show's
                 c.clicked.connect(self.ctx.open)
                 cards.append(c)
             self.add(CardRow("Seasons", cards))
@@ -1127,6 +1165,7 @@ class SeasonDetailPage(DetailBase):
         img = ImageBox(224, 126, 8)
         img.set_url(self.ctx.client.image_url(ep.get("thumb"), 448, 252))
         img.progress = ep.progress
+        img.rating = ep.imdb_rating
         h.addWidget(img)
         col = QVBoxLayout()
         col.setSpacing(4)

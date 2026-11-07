@@ -122,7 +122,9 @@ class NavButton(QPushButton):
 
 
 class MainWindow(QMainWindow):
-    TABS = [("Home", "home"), ("Libraries", "grid"), ("Search", "search"), ("Settings", "gear")]
+    TABS = [("Home", "home"), ("Discover", "compass"), ("Libraries", "grid"), ("Search", "search"),
+            ("Settings", "gear")]
+    LIBRARIES, SEARCH, SETTINGS = 2, 3, 4
 
     def __init__(self):
         super().__init__()
@@ -140,6 +142,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 640)
         self.ctx = Context(self)
         self.ctx.data_changed.connect(self._data_changed)
+        from . import imdb
+        imdb.on_ready(self.ctx.data_changed.emit)   # fresh IMDb ratings: redraw the page with them
+        imdb.start()
         theme.set_accent(self.ctx.settings["accent"])
         QApplication.instance().setStyleSheet(theme.full_stylesheet(os.path.dirname(resource_path("check.png"))))
 
@@ -225,7 +230,7 @@ class MainWindow(QMainWindow):
         self._fs_by_player = False
 
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.back)
-        QShortcut(QKeySequence("Ctrl+F"), self, activated=lambda: self.switch_tab(2))
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=lambda: self.switch_tab(self.SEARCH))
         QApplication.instance().installEventFilter(self)
 
         self._restore_geometry()
@@ -273,10 +278,11 @@ class MainWindow(QMainWindow):
         self.current_tab = i
         self.nav_buttons[i].setChecked(True)
         if i not in self.tab_roots:
-            page = [HomePage, LibrariesPage, SearchPage, SettingsPage][i](self.ctx)
+            from .discover import DiscoverPage
+            page = [HomePage, DiscoverPage, LibrariesPage, SearchPage, SettingsPage][i](self.ctx)
             self.tab_roots[i] = page
             self.stack.addWidget(page)
-        elif hasattr(self.tab_roots[i], "refresh") and i in (1, 3):
+        elif hasattr(self.tab_roots[i], "refresh") and i in (1, self.LIBRARIES, self.SETTINGS):
             self.tab_roots[i].refresh()
         page = self.tab_roots[i]
         self.stack.setCurrentWidget(page)
@@ -317,7 +323,7 @@ class MainWindow(QMainWindow):
             home.refresh()
 
     def libraries_changed(self):
-        for i in (0, 1):
+        for i in (0, self.LIBRARIES):
             p = self.tab_roots.get(i)
             if p is not None:
                 p.refresh()
