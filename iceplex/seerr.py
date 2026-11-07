@@ -6,6 +6,7 @@ Seerr under that user exactly as if made on Seerr's own website.
 """
 from __future__ import annotations
 
+import re
 import threading
 from typing import Optional
 
@@ -30,12 +31,17 @@ class Seerr:
         self.token = plex_token
         self.s = requests.Session()
         self.s.headers["Accept"] = "application/json"
+        self.s.cookies.set_policy(__import__("http.cookiejar").cookiejar.DefaultCookiePolicy(allowed_domains=[]))
         self._signed_in = False
         self._lock = threading.Lock()
+        # Seerr's sign-in cookie, sent by hand: Seerr can mark it HTTPS-only, and this runs over plain http
+        # (WireGuard), so a normal cookie jar would never send it back.
+        self.cookie: Optional[str] = None
 
     # -- plumbing -----------------------------------------------------------------
 
     def _login(self):
+        self.cookie = None
         try:
             r = self.s.post(f"{self.base}/api/v1/auth/plex", json={"authToken": self.token}, timeout=15)
         except requests.RequestException as e:
@@ -44,6 +50,10 @@ class Seerr:
             raise SeerrError("Seerr didn't let this Plex account in (does it have a Seerr user?).")
         if r.status_code >= 400:
             raise SeerrError(f"Seerr sign-in failed ({r.status_code}).")
+        m = re.search(r"connect\.sid=[^;,\s]+", r.headers.get("Set-Cookie", ""))
+        if not m:
+            raise SeerrError("Seerr signed in but sent no session cookie.")
+        self.cookie = m.group(0)
         self._signed_in = True
 
     def _call(self, method: str, path: str, **kw):
@@ -54,7 +64,8 @@ class Seerr:
                 self._login()
         for attempt in (1, 2):
             try:
-                r = self.s.request(method, f"{self.base}/api/v1{path}", timeout=20, **kw)
+                r = self.s.request(method, f"{self.base}/api/v1{path}", timeout=20,
+                                   headers={"Cookie": self.cookie or ""}, **kw)
             except requests.RequestException as e:
                 raise SeerrError(f"Can't reach Seerr at {self.base} (is WireGuard on?)") from e
             if r.status_code in (401, 403) and attempt == 1:
