@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from typing import Optional
 
 import requests
@@ -35,6 +36,7 @@ SERVICES = [("Netflix", ("netflix",)), ("Disney+", ("disney plus", "disney+")), 
 
 # Seerr's media status numbers.
 UNKNOWN, PENDING, PROCESSING, PARTIAL, AVAILABLE, DELETED = 1, 2, 3, 4, 5, 6
+RETRY_WAITS = (1.5, 3.0)   # a connection that is still coming up (WireGuard) gets a few seconds before giving up
 STATUS_TEXT = {PENDING: "Requested", PROCESSING: "Requested", PARTIAL: "Partly available", AVAILABLE: "Available"}
 
 
@@ -62,9 +64,9 @@ class Seerr:
     def _login(self):
         self.cookie = None
         try:
-            r = self.s.post(f"{self.base}/api/v1/auth/plex", json={"authToken": self.token}, timeout=15)
+            r = self._send("POST", f"{self.base}/api/v1/auth/plex", json={"authToken": self.token}, timeout=15)
         except requests.RequestException as e:
-            raise SeerrError(f"Can't reach Seerr at {self.base} (is WireGuard on?)") from e
+            raise SeerrError(f"Can't reach Seerr at {self.base}.") from e
         if r.status_code == 403:
             raise SeerrError("Seerr didn't let this Plex account in (does it have a Seerr user?).")
         if r.status_code >= 400:
@@ -75,6 +77,16 @@ class Seerr:
         self.cookie = m.group(0)
         self._signed_in = True
 
+    def _send(self, method, url, **kw):
+        """One request, tried again a couple of times over a few seconds if the connection fails."""
+        for wait in RETRY_WAITS + (None,):
+            try:
+                return self.s.request(method, url, **kw)
+            except (requests.ConnectionError, requests.Timeout):
+                if wait is None:
+                    raise
+                time.sleep(wait)
+
     def _call(self, method: str, path: str, **kw):
         if not self.base:
             raise SeerrError("Set your Seerr address in Settings first.")
@@ -83,10 +95,10 @@ class Seerr:
                 self._login()
         for attempt in (1, 2):
             try:
-                r = self.s.request(method, f"{self.base}/api/v1{path}", timeout=20,
-                                   headers={"Cookie": self.cookie or ""}, **kw)
+                r = self._send(method, f"{self.base}/api/v1{path}", timeout=20,
+                               headers={"Cookie": self.cookie or ""}, **kw)
             except requests.RequestException as e:
-                raise SeerrError(f"Can't reach Seerr at {self.base} (is WireGuard on?)") from e
+                raise SeerrError(f"Can't reach Seerr at {self.base}.") from e
             if r.status_code in (401, 403) and attempt == 1:
                 with self._lock:
                     self._login()       # session expired: sign in again once
@@ -325,6 +337,48 @@ class Seerr:
         return {"name": d.get("name") or "Collection", "overview": d.get("overview") or "",
                 "backdrop": (BACKDROP + d["backdropPath"]) if d.get("backdropPath") else None, "parts": parts}
 
+    # -- your requests ----------------------------------------------------------------
+
+    def my_requests(self, take: int = 100) -> list[dict]:
+        """Requests, newest first, each with the title filled in: [{request fields + title/poster/...}]."""
+        data = self._call("GET", f"/request?take={take}&skip=0&filter=all&sort=added&sortDirection=desc")
+        out = []
+        for rq in data.get("results") or []:
+            media = rq.get("media") or {}
+            kind = media.get("mediaType") or rq.get("type")
+            tid = media.get("tmdbId")
+            if kind not in ("movie", "tv") or not tid:
+                continue
+            out.append({"request_id": rq.get("id"), "req_status": rq.get("status"), "kind": kind, "id": tid,
+                        "status": media.get("status") or UNKNOWN, "rating_key": media.get("ratingKey"),
+                        "requested_at": (rq.get("createdAt") or "")[:10],
+                        "seasons_requested": sorted(s.get("seasonNumber") for s in rq.get("seasons") or []
+                                                    if s.get("seasonNumber") is not None),
+                        "media_seasons": {s.get("seasonNumber"): s.get("status") for s in media.get("seasons") or []}})
+        return out
+
+    def fill(self, r: dict) -> dict:
+        """Title, poster, dates (and seasons with air dates for shows) for a request row."""
+        d = self._call("GET", f"/{r['kind']}/{r['id']}")
+        d["mediaType"] = r["kind"]
+        x = self.result(d) or {}
+        out = dict(r, title=x.get("title"), year=x.get("year"), date=x.get("date"), poster=x.get("poster"),
+                   imdb_id=self._imdb_id(d), cert=self._cert(r["kind"], d))
+        if r["kind"] == "tv":
+            out["seasons"] = [{"number": s.get("seasonNumber"), "name": s.get("name"), "episodes": s.get("episodeCount") or 0,
+                               "air_date": s.get("airDate") or ""}
+                              for s in d.get("seasons") or [] if s.get("seasonNumber")]
+            nxt = d.get("nextEpisodeToAir") or {}
+            out["next_air"] = nxt.get("airDate") or ""
+            out["next_code"] = (f"S{nxt.get('seasonNumber')} E{nxt.get('episodeNumber')}"
+                                if nxt.get("seasonNumber") is not None else "")
+        return out
+
+    def season_episodes(self, tmdb_id: int, season: int) -> list[dict]:
+        d = self._call("GET", f"/tv/{tmdb_id}/season/{season}")
+        return [{"number": e.get("episodeNumber"), "name": e.get("name") or "", "air_date": e.get("airDate") or ""}
+                for e in d.get("episodes") or [] if e.get("episodeNumber") is not None]
+
     # -- people ---------------------------------------------------------------------
 
     def person(self, person_id: int) -> dict:
@@ -345,7 +399,7 @@ class Seerr:
                 continue
             seen.add((x["kind"], x["id"]))
             known.append(x)
-            if len(known) >= 10:
+            if len(known) >= 30:
                 break
         groups: dict[str, list] = {}
         if cast:

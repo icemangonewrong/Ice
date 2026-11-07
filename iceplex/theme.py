@@ -392,6 +392,15 @@ def _draw(name: str, p: QPainter, s: float, color: str):
         hole = QPainterPath()
         hole.addEllipse(QPointF(cx, cy), s * .13, s * .13)
         p.drawPath(path.subtracted(hole))
+    elif name == "requests":
+        p.setPen(_pen(color, lw * 0.85))
+        p.setBrush(Qt.NoBrush)
+        for i, y in enumerate((.28, .5, .72)):
+            p.drawLine(QPointF(s * .40, s * y), QPointF(s * .84, s * y))
+        p.drawLine(QPointF(s * .12, s * .50), QPointF(s * .19, s * .57))
+        p.drawLine(QPointF(s * .19, s * .57), QPointF(s * .30, s * .42))
+        p.drawEllipse(QPointF(s * .21, s * .28), s * .03, s * .03)
+        p.drawEllipse(QPointF(s * .21, s * .72), s * .03, s * .03)
     elif name == "compass":
         p.setPen(_pen(color, lw * 0.85))
         p.setBrush(Qt.NoBrush)

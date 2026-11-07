@@ -146,6 +146,29 @@ def open_person(ctx, person_id: Optional[int], name: str):
     run_bg(lambda: sr.find_person(name), lambda pid: pid and ctx.push(PersonPage(ctx, pid, name)))
 
 
+def quick_request(ctx, r: dict, on_done: Callable, on_fail: Callable):
+    """One-click request: a movie, or every season of a show."""
+    sr = ctx.seerr()
+    if not sr:
+        on_fail(Exception("Seerr isn't set up"))
+        return
+
+    def done(res):
+        r["status"] = PENDING
+        on_done(res)
+    run_bg(lambda: sr.request(r["kind"], r["id"], None), done, on_fail)
+
+
+def hover_button(text: str) -> QPushButton:
+    b = QPushButton(text)
+    b.setCursor(Qt.PointingHandCursor)
+    b.setStyleSheet(f"QPushButton {{ background: {theme.ORANGE}; color: {theme.on_accent_text()}; border: none;"
+                    f" border-radius: 8px; padding: 6px 10px; font-weight: 700; }}"
+                    f"QPushButton:hover {{ background: {theme.ORANGE_HOVER}; }}"
+                    f"QPushButton:disabled {{ background: #3a3a44; color: #d0d0d8; }}")
+    return b
+
+
 def open_list(ctx, title: str, kinds: list[str], filters: dict, sorts: bool = True):
     ctx.push(GridPage(ctx, title, kinds, filters, sorts))
 
@@ -169,6 +192,14 @@ class SeerrCard(QWidget):
         self.img.set_url(r.get("poster"))
         self.img.status = status_of(r)
         lay.addWidget(self.img)
+        # "Request" pops up on the poster when the mouse is over it (only for things not here or requested).
+        self.ctx = ctx
+        self.req = hover_button("＋  Request")
+        self.req.setParent(self.img)
+        self.req.setFixedWidth(width - 24)
+        self.req.move(12, int(width * 1.5) - 46)
+        self.req.hide()
+        self.req.clicked.connect(self._request)
         t = label(r.get("title") or "")
         t.setFont(theme.font(10, QFont.DemiBold))
         t.setFixedWidth(width)
@@ -203,10 +234,31 @@ class SeerrCard(QWidget):
     def enterEvent(self, e):
         self.img.highlight = True
         self.img.update()
+        if status_of(self.r) is None and self.ctx.seerr():
+            self.req.show()
+            self.req.raise_()
 
     def leaveEvent(self, e):
         self.img.highlight = False
         self.img.update()
+        if self.req.isEnabled():
+            self.req.hide()
+
+    def _request(self):
+        self.req.setEnabled(False)
+        self.req.setText("Requesting…")
+
+        def done(_):
+            self.img.status = "req"
+            self.img.update()
+            self.req.setText("✓  Requested")
+            QTimer.singleShot(1200, self.req.hide)
+
+        def failed(e):
+            self.req.setEnabled(True)
+            self.req.setText("Couldn't request")
+            self.req.setToolTip(str(e))
+        quick_request(self.ctx, self.r, done, failed)
 
     def mousePressEvent(self, e):
         e.accept()
@@ -386,11 +438,10 @@ class DiscoverPage(ScrollPage):
             b.clicked.connect(lambda _=False, k=key: self._set_kind(k))
             self.chips[key] = b
             head.addWidget(b)
-        wl = chip("Watchlist")
-        wl.setCheckable(False)
-        wl.clicked.connect(lambda: self.ctx.push(GridPage(self.ctx, "Your Plex watchlist", ["all"], {"_watchlist": 1},
-                                                          sorts=False)))
-        head.addWidget(wl)
+        rq = chip("Requests")
+        rq.setCheckable(False)
+        rq.clicked.connect(lambda: self.ctx.push(RequestsPage(self.ctx, pushed=True)))
+        head.addWidget(rq)
         head.addStretch()
         hw = QWidget()
         hw.setLayout(head)
@@ -430,6 +481,10 @@ class DiscoverPage(ScrollPage):
         self.data[key] = res
         self._render()
 
+    def _retry(self):
+        self.data = {}
+        self._load()
+
     def _set_kind(self, k):
         self.kind = k
         for key, b in self.chips.items():
@@ -467,7 +522,13 @@ class DiscoverPage(ScrollPage):
             if items:
                 self.rows.addWidget(cards_row(self.ctx, title, items, on_title=self._see_all(key)))
         if errors and len(errors) == len([1 for _k, _t, kd in self.ROWS if self.kind == "all" or kd in ("all", self.kind)]):
-            self.rows.addWidget(message_widget(f"Couldn't reach Seerr.\n{errors[0]}"))
+            box = QWidget()
+            v = QVBoxLayout(box)
+            v.addWidget(message_widget(errors[0]))
+            again = button("Try again")
+            again.clicked.connect(self._retry)
+            v.addWidget(centered(again))
+            self.rows.addWidget(box)
         self._add_services()
         self._add_networks()
         self._add_genres()
@@ -988,42 +1049,58 @@ def _nice_date(s: str) -> str:
 
 
 class CreditRow(ClickRow):
-    """One line of a filmography: year, title, role · age rating, IMDb, in-library mark."""
+    """One title in a filmography, IMDb-app style: a real poster, the title with room to wrap, year and role,
+    age rating and IMDb score, and an in-library mark or Request button."""
 
     def __init__(self, ctx, r: dict):
         super().__init__()
-        self.r = r
+        self.ctx, self.r = ctx, r
         self.setMaximumWidth(1000)
         h = QHBoxLayout(self)
-        h.setContentsMargins(14, 8, 14, 8)
-        h.setSpacing(14)
-        y = label(r.get("year") or "—", "Muted")
-        y.setFixedWidth(44)
-        h.addWidget(y)
-        img = ImageBox(36, 54, 4)
+        h.setContentsMargins(10, 10, 16, 10)
+        h.setSpacing(16)
+        img = ImageBox(72, 108, 6)
         img.set_url(r.get("poster"))
         h.addWidget(img)
         col = QVBoxLayout()
-        col.setSpacing(1)
-        t = label(r.get("title") or "")
-        t.setFont(theme.font(10.5, QFont.Bold))
+        col.setSpacing(4)
+        t = label(r.get("title") or "", wrap=True)
+        t.setFont(theme.font(11.5, QFont.Bold))
         col.addWidget(t)
-        self.sub = label("", "Muted")
-        self.sub.setFont(theme.font(9))
-        col.addWidget(self.sub)
-        h.addLayout(col, 1)
+        line = "  ·  ".join(x for x in (r.get("year") or "", r.get("role") or "") if x)
+        col.addWidget(label(line, "Muted", wrap=True))
+        tags = QHBoxLayout()
+        tags.setSpacing(8)
+        self.cert = outline_badge("")
+        self.cert.hide()
+        tags.addWidget(self.cert)
         self.badge = QLabel()
-        self.badge.setFont(theme.font(9, QFont.Bold))
+        self.badge.setFont(theme.font(9.5, QFont.Bold))
         self.badge.setStyleSheet("background: #f5c518; color: black; border-radius: 4px; padding: 1px 6px;")
         self.badge.hide()
-        h.addWidget(self.badge, 0, Qt.AlignVCenter)
+        tags.addWidget(self.badge)
+        extra = []
+        if r["kind"] == "tv":
+            extra.append("TV show")
+            if r.get("episodes"):
+                extra.append(f"{r['episodes']} episode" + ("" if r["episodes"] == 1 else "s"))
+        if extra:
+            tags.addWidget(label("  ·  ".join(extra), "Muted"))
+        tags.addStretch()
+        col.addLayout(tags)
+        col.addStretch()
+        h.addLayout(col, 1)
         st = status_of(r)
-        mark = label({"lib": "✓ In library", "req": "Requested"}.get(st, "＋ Request"))
-        mark.setFont(theme.font(9, QFont.Bold))
-        mark.setStyleSheet({"lib": "color: #4cd07a;", "req": "color: #f0b040;"}.get(st, f"color: {theme.MUTED};"))
-        mark.setFixedWidth(96)
-        mark.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        h.addWidget(mark)
+        if st:
+            mark = label({"lib": "✓  In library", "req": "Requested"}[st])
+            mark.setFont(theme.font(9.5, QFont.Bold))
+            mark.setStyleSheet({"lib": "color: #4cd07a;", "req": "color: #f0b040;"}[st])
+            h.addWidget(mark, 0, Qt.AlignVCenter)
+        else:
+            self.req = hover_button("＋  Request")
+            self.req.setFixedWidth(120)
+            self.req.clicked.connect(self._request)
+            h.addWidget(self.req, 0, Qt.AlignVCenter)
         self.clicked.connect(lambda: open_result(ctx, r))
         self._apply()
         extras().ready.connect(self._ready)
@@ -1031,21 +1108,34 @@ class CreditRow(ClickRow):
         if sr:
             extras().want(sr, r)
 
+    def _request(self):
+        self.req.setEnabled(False)
+        self.req.setText("Requesting…")
+
+        def failed(e):
+            self.req.setEnabled(True)
+            self.req.setText("Couldn't request")
+            self.req.setToolTip(str(e))
+        quick_request(self.ctx, self.r, lambda _: self.req.setText("✓  Requested"), failed)
+
     def _ready(self, key):
         if key == Extras.key(self.r):
             self._apply()
 
     def _apply(self):
         e = extras().get(self.r) or {}
-        bits = [self.r.get("role") or "", kind_word(self.r["kind"]) if self.r["kind"] == "tv" else "",
-                e.get("cert") or ""]
-        if self.r["kind"] == "tv" and self.r.get("episodes"):
-            bits.append(f"{self.r['episodes']} ep")
-        self.sub.setText("  ·  ".join(b for b in bits if b))
+        if e.get("cert"):
+            self.cert.setText(e["cert"])
+            self.cert.show()
         sc = imdb.rating(e.get("imdb_id"))
         if sc is not None:
-            self.badge.setText(f"IMDb {sc:.1f}")
+            self.badge.setText(f"IMDb  {sc:.1f}")
             self.badge.show()
+
+
+def imdb_of(r: dict) -> float:
+    e = extras().get(r) or {}
+    return imdb.rating(e.get("imdb_id")) or -1.0
 
 
 class PersonPage(ScrollPage):
@@ -1130,6 +1220,13 @@ class PersonPage(ScrollPage):
                 self.tabs[g] = b
                 head.addWidget(b)
             head.addStretch()
+            head.addWidget(label("Sort", "Muted"))
+            self.sorts = {}
+            for key, text in (("new", "Newest"), ("imdb", "IMDb rating"), ("pop", "Popular")):
+                b = chip(text, key == "new")
+                b.clicked.connect(lambda _=False, k=key: self._set_sort(k))
+                self.sorts[key] = b
+                head.addWidget(b)
             hw = QWidget()
             hw.setLayout(head)
             self.body.addWidget(hw)
@@ -1141,7 +1238,42 @@ class PersonPage(ScrollPage):
             self._show_group(groups[0][0])
         self.body.addStretch()
 
+    sort = "new"
+    group = None
+    show_all = False
+
+    def _set_sort(self, k):
+        self.sort = k
+        for key, b in self.sorts.items():
+            b.setChecked(key == k)
+        if k == "imdb":
+            # Needs every title's IMDb id: fetch the missing ones, re-sorting as they come in.
+            sr = self.ctx.seerr()
+            if sr:
+                for r in dict(self.p["groups"])[self.group]:
+                    extras().want(sr, r)
+            if not hasattr(self, "_resort"):
+                self._resort = QTimer(self)
+                self._resort.setSingleShot(True)
+                self._resort.setInterval(700)
+                self._resort.timeout.connect(lambda: self.sort == "imdb" and self._show_group(self.group, self.show_all))
+                extras().ready.connect(self._extra_ready)
+        self._show_group(self.group, self.show_all)
+
+    def _extra_ready(self, _key):
+        if self.sort == "imdb":
+            self._resort.start()
+
+    def _sorted(self, lst):
+        if self.sort == "imdb":
+            return sorted(lst, key=lambda r: -imdb_of(r))
+        if self.sort == "pop":
+            return sorted(lst, key=lambda r: -(r.get("votes") or 0))
+        return lst   # already newest first
+
     def _show_group(self, g, show_all=False):
+        self.group, self.show_all = g, show_all
+        sb = self.verticalScrollBar().value()
         for k, b in self.tabs.items():
             b.setChecked(k == g)
         while self.list.count():
@@ -1149,7 +1281,7 @@ class PersonPage(ScrollPage):
             if it.widget():
                 it.widget().hide()
                 it.widget().deleteLater()
-        lst = dict(self.p["groups"])[g]
+        lst = self._sorted(dict(self.p["groups"])[g])
         shown = lst if show_all else lst[:self.SHOW]
         for r in shown:
             self.list.addWidget(CreditRow(self.ctx, r))
@@ -1158,6 +1290,7 @@ class PersonPage(ScrollPage):
             b.setMaximumWidth(220)
             b.clicked.connect(lambda: self._show_group(g, True))
             self.list.addWidget(b)
+        QTimer.singleShot(0, lambda: self.verticalScrollBar().setValue(sb))
 
 
 # ---------------------------------------------------------------------------
@@ -1196,10 +1329,430 @@ class CollectionPage(ScrollPage):
             s.setFont(theme.font(11))
             s.setMaximumWidth(980)
             self.body.addWidget(self.padded(s))
-        cards = []
+        self.cards = []
         for r in c["parts"]:
             card = SeerrCard(self.ctx, r)
             card.clicked.connect(lambda r: open_result(self.ctx, r))
-            cards.append(card)
-        self.body.addWidget(flow_box(cards, 20))
+            self.cards.append(card)
+        missing = [cd for cd in self.cards if status_of(cd.r) is None]
+        if missing:
+            row = QHBoxLayout()
+            row.setContentsMargins(32, 0, 32, 0)
+            self.req_all = primary(f"＋   Request missing ({len(missing)})")
+            self.req_all.setToolTip("Request every movie in this collection that isn't in your library or requested yet")
+            self.req_all.clicked.connect(lambda: self._request_all(missing))
+            row.addWidget(self.req_all)
+            self.req_note = label("", "Muted")
+            row.addWidget(self.req_note)
+            row.addStretch()
+            w = QWidget()
+            w.setLayout(row)
+            self.body.addWidget(w)
+        self.body.addWidget(flow_box(self.cards, 20))
         self.body.addStretch()
+
+    def _request_all(self, missing):
+        sr = self.ctx.seerr()
+        self.req_all.setEnabled(False)
+        self.req_all.setText("Requesting…")
+
+        def go():
+            ok, failed = [], []
+            for cd in missing:
+                try:
+                    sr.request("movie", cd.r["id"], None)
+                    ok.append(cd)
+                except Exception as e:  # noqa: BLE001
+                    failed.append((cd, str(e)))
+            return ok, failed
+
+        def done(res):
+            ok, failed = res
+            for cd in ok:
+                cd.r["status"] = PENDING
+                cd.img.status = "req"
+                cd.img.update()
+            self.req_all.setText(f"✓  Requested {len(ok)}")
+            if failed:
+                self.req_note.setText(f"{len(failed)} couldn't be requested: {failed[0][1]}")
+        run_bg(go, done, lambda e: (self.req_all.setEnabled(True), self.req_all.setText("＋   Request missing"),
+                                    self.req_note.setText(str(e))))
+
+
+# ---------------------------------------------------------------------------
+# Your requests (like Seerr's Requests page, but saying plainly what's here and what isn't out yet)
+# ---------------------------------------------------------------------------
+
+def _date(s: str) -> Optional[datetime.date]:
+    try:
+        return datetime.date.fromisoformat((s or "")[:10])
+    except ValueError:
+        return None
+
+
+def _short_date(s: str) -> str:
+    d = _date(s)
+    if not d:
+        return ""
+    today = datetime.date.today()
+    return f"{d.strftime('%b')} {d.day}" + ("" if d.year == today.year else f", {d.year}")
+
+
+def tv_progress(ctx, r: dict) -> list[dict]:
+    """Per requested season: which episodes are in Plex, which are out but not here, which aren't out yet.
+    [{number, name, eps: [{number, name, air_date, state: 'have'|'missing'|'future'}]}]"""
+    sr = ctx.seerr()
+    have: set = set()
+    if r.get("rating_key"):
+        try:
+            data = ctx.client.get(f"/library/metadata/{r['rating_key']}/allLeaves")
+            for m in data.get("MediaContainer", {}).get("Metadata") or []:
+                have.add((m.get("parentIndex"), m.get("index")))
+        except Exception:  # noqa: BLE001
+            pass
+    today = datetime.date.today()
+    seasons = r.get("seasons_requested") or [s["number"] for s in r.get("seasons") or []]
+    names = {s["number"]: s.get("name") for s in r.get("seasons") or []}
+    out = []
+    for n in seasons:
+        try:
+            eps = sr.season_episodes(r["id"], n)
+        except Exception:  # noqa: BLE001
+            eps = []
+        rows = []
+        for e in eps:
+            d = _date(e["air_date"])
+            if (n, e["number"]) in have:
+                st = "have"
+            elif d is None or d > today:
+                st = "future"
+            else:
+                st = "missing"
+            rows.append(dict(e, state=st))
+        out.append({"number": n, "name": names.get(n) or f"Season {n}", "eps": rows})
+    return out
+
+
+def progress_text(prog: list[dict]) -> tuple[str, str]:
+    """(summary line, colour) for a show's request."""
+    have = sum(1 for s in prog for e in s["eps"] if e["state"] == "have")
+    missing = sum(1 for s in prog for e in s["eps"] if e["state"] == "missing")
+    future = [e for s in prog for e in s["eps"] if e["state"] == "future"]
+    out = have + missing
+    if not prog or not any(s["eps"] for s in prog):
+        return "", theme.MUTED
+    if missing == 0 and out and future:
+        nxt = min((e["air_date"] for e in future if e["air_date"]), default="")
+        return (f"All {out} episodes out so far are here  ·  {len(future)} more coming"
+                + (f", next {_short_date(nxt)}" if nxt else "")), "#4cd07a"
+    if missing == 0 and out:
+        return f"All {out} episodes are here", "#4cd07a"
+    if out == 0:
+        nxt = min((e["air_date"] for e in future if e["air_date"]), default="")
+        return "Not out yet" + (f"  ·  starts {_short_date(nxt)}" if nxt else ""), theme.MUTED
+    txt = f"{have} of {out} episodes out so far are here  ·  {missing} still coming in"
+    if future:
+        txt += f"  ·  {len(future)} not out yet"
+    return txt, "#f0b040"
+
+
+def request_state(r: dict) -> tuple[str, str]:
+    """(word, colour) for a request's status pill."""
+    if r.get("req_status") == 3:
+        return "Declined", "#e5383b"
+    st = r.get("status")
+    if st == AVAILABLE:
+        return "Available", "#22a447"
+    if st == PARTIAL:
+        return "Partly available", "#2f8cff"
+    if r["kind"] == "movie":
+        d = _date(r.get("date") or "")
+        if d and d > datetime.date.today():
+            return "Not out yet", "#6a6a76"
+    if st == PROCESSING or r.get("req_status") == 2:
+        return "Requested", "#d98a00"
+    return "Waiting for approval", "#8a5cff"
+
+
+def pill(text: str, color: str) -> QLabel:
+    p = QLabel(text)
+    p.setFont(theme.font(9, QFont.Bold))
+    p.setStyleSheet(f"background: {color}; color: white; border-radius: 10px; padding: 3px 10px;")
+    return p
+
+
+class RequestRow(ClickRow):
+    def __init__(self, ctx, r: dict):
+        super().__init__()
+        self.ctx, self.r = ctx, r
+        self.setMaximumWidth(1100)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 10, 16, 10)
+        h.setSpacing(16)
+        img = ImageBox(72, 108, 6)
+        img.set_url(r.get("poster"))
+        h.addWidget(img)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        t = label(r.get("title") or "", wrap=True)
+        t.setFont(theme.font(11.5, QFont.Bold))
+        col.addWidget(t)
+        bits = [r.get("year") or "", kind_word(r["kind"]), r.get("cert") or ""]
+        if r["kind"] == "tv" and r.get("seasons_requested"):
+            sn = r["seasons_requested"]
+            bits.append(("Season " if len(sn) == 1 else "Seasons ") + ", ".join(str(x) for x in sn))
+        if r["kind"] == "movie" and r.get("date"):
+            d = _date(r["date"])
+            if d and d > datetime.date.today():
+                bits.append(f"comes out {_nice_date(r['date'])}")
+        col.addWidget(label("  ·  ".join(b for b in bits if b), "Muted", wrap=True))
+        self.progress = label("", wrap=True)
+        self.progress.setFont(theme.font(9.5, QFont.DemiBold))
+        self.progress.hide()
+        col.addWidget(self.progress)
+        if r.get("requested_at"):
+            col.addWidget(label(f"Requested {_nice_date(r['requested_at'])}", "Muted"))
+        col.addStretch()
+        h.addLayout(col, 1)
+        word, color = request_state(r)
+        self.pill = pill(word, color)
+        h.addWidget(self.pill, 0, Qt.AlignVCenter)
+        self.clicked.connect(self._open)
+        if r["kind"] == "tv" and r.get("status") != AVAILABLE and r.get("req_status") != 3:
+            self.progress.setText("Checking episodes…")
+            self.progress.setStyleSheet(f"color: {theme.MUTED};")
+            self.progress.show()
+            run_bg(lambda: tv_progress(ctx, r), self._got)
+
+    def _got(self, prog):
+        self.r["progress"] = prog
+        txt, color = progress_text(prog)
+        self.progress.setText(txt)
+        self.progress.setStyleSheet(f"color: {color};")
+        self.progress.setVisible(bool(txt))
+
+    def _open(self):
+        if self.r["kind"] == "tv":
+            self.ctx.push(RequestDetailPage(self.ctx, self.r))
+        else:
+            open_result(self.ctx, self.r)
+
+
+class RequestsPage(ScrollPage):
+    title = "Requests"
+    FILTERS = [("all", "All"), ("waiting", "Requested"), ("partial", "Partly available"), ("available", "Available")]
+
+    def __init__(self, ctx, pushed: bool = False):
+        super().__init__()
+        self.ctx = ctx
+        self.body.setContentsMargins(32, 76 if pushed else 28, 32, 40)
+        self.body.setSpacing(16)
+        self.filter = "all"
+        self.items: Optional[list] = None
+        self._loading = False
+        self.refresh()
+
+    def refresh(self):
+        if self._loading:
+            return
+        self.clear()
+        if needs_seerr(self, self.ctx):
+            return
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addWidget(label("Requests", "H1"))
+        head.addSpacing(18)
+        self.chips = {}
+        for key, text in self.FILTERS:
+            b = chip(text, key == self.filter)
+            b.clicked.connect(lambda _=False, k=key: self._set_filter(k))
+            self.chips[key] = b
+            head.addWidget(b)
+        head.addStretch()
+        hw = QWidget()
+        hw.setLayout(head)
+        self.body.addWidget(hw)
+        self.list_box = QWidget()
+        self.list = QVBoxLayout(self.list_box)
+        self.list.setContentsMargins(0, 0, 0, 0)
+        self.list.setSpacing(8)
+        self.body.addWidget(self.list_box)
+        self.body.addStretch()
+        self.list.addWidget(loading_widget())
+        self._loading = True
+        sr = self.ctx.seerr()
+
+        def fetch():
+            reqs = sr.my_requests()
+            with ThreadPoolExecutor(6) as ex:
+                filled = list(ex.map(lambda r: _safe_fill(sr, r), reqs))
+            return filled
+
+        run_bg(fetch, self._got, self._fail)
+
+    def _fail(self, e):
+        self._loading = False
+        self._clear_list()
+        self.list.addWidget(message_widget(str(e)))
+        again = button("Try again")
+        again.clicked.connect(self.refresh)
+        self.list.addWidget(centered(again))
+
+    def _got(self, items):
+        self._loading = False
+        self.items = items
+        counts = {k: len(self._matching(k)) for k, _ in self.FILTERS}
+        for k, text in self.FILTERS:
+            self.chips[k].setText(f"{text}  {counts[k]}")
+        self._render()
+
+    def _matching(self, k):
+        items = self.items or []
+        if k == "waiting":
+            return [r for r in items if r.get("status") not in (AVAILABLE, PARTIAL) and r.get("req_status") != 3]
+        if k == "partial":
+            return [r for r in items if r.get("status") == PARTIAL]
+        if k == "available":
+            return [r for r in items if r.get("status") == AVAILABLE]
+        return items
+
+    def _set_filter(self, k):
+        self.filter = k
+        for key, b in self.chips.items():
+            b.setChecked(key == k)
+        self._render()
+
+    def _clear_list(self):
+        while self.list.count():
+            it = self.list.takeAt(0)
+            if it.widget():
+                it.widget().hide()
+                it.widget().deleteLater()
+
+    def _render(self):
+        self._clear_list()
+        rows = self._matching(self.filter)
+        if not rows:
+            self.list.addWidget(label("Nothing here.", "Muted"))
+        for r in rows:
+            self.list.addWidget(RequestRow(self.ctx, r))
+
+
+def _safe_fill(sr, r):
+    try:
+        return sr.fill(r)
+    except Exception:  # noqa: BLE001
+        return dict(r, title=f"{kind_word(r['kind'])} {r['id']}")
+
+
+class EpisodeTile(QLabel):
+    STYLE = {"have": ("#1f6f3a", "#e8ffe8", "solid #22a447"),
+             "missing": ("#3a2c10", "#ffd890", "solid #d98a00"),
+             "future": ("transparent", "#a6a6b2", "dashed #55555f")}
+
+    def __init__(self, e: dict):
+        bg, fg, border = self.STYLE[e["state"]]
+        sub = {"have": "✓", "missing": "coming in", "future": _short_date(e["air_date"]) or "TBA"}[e["state"]]
+        super().__init__(f"E{e['number']}\n{sub}")
+        self.setAlignment(Qt.AlignCenter)
+        self.setFixedSize(100, 54)
+        self.setFont(theme.font(9, QFont.Bold))
+        self.setStyleSheet(f"background: {bg}; color: {fg}; border: 1.5px {border}; border-radius: 8px;")
+        tip = e.get("name") or ""
+        if e.get("air_date"):
+            tip += f"\n{'Aired' if e['state'] != 'future' else 'Airs'} {_nice_date(e['air_date'])}"
+        self.setToolTip(tip.strip())
+
+
+class RequestDetailPage(ScrollPage):
+    """A show's request, episode by episode: here / out but not here yet / not out yet."""
+
+    def __init__(self, ctx, r: dict):
+        super().__init__()
+        self.ctx, self.r = ctx, r
+        self.title = r.get("title") or ""
+        self.body.setContentsMargins(32, 76, 32, 40)
+        self.body.setSpacing(18)
+        top = QHBoxLayout()
+        top.setSpacing(22)
+        img = ImageBox(140, 210, 10)
+        img.set_url(r.get("poster"))
+        top.addWidget(img, 0, Qt.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(8)
+        col.addWidget(label(r.get("title") or "", "H1", wrap=True))
+        word, color = request_state(r)
+        pr = QHBoxLayout()
+        pr.addWidget(pill(word, color))
+        pr.addStretch()
+        col.addLayout(pr)
+        self.summary = label("", wrap=True)
+        self.summary.setFont(theme.font(11, QFont.DemiBold))
+        col.addWidget(self.summary)
+        btns = QHBoxLayout()
+        btns.setSpacing(10)
+        if r.get("rating_key"):
+            b = primary("▶   Open in your library")
+            b.clicked.connect(lambda: ctx.open(Item({"ratingKey": str(r["rating_key"]), "type": "show",
+                                                     "title": r.get("title")})))
+            btns.addWidget(b)
+        tb = button("Title page")
+        tb.clicked.connect(lambda: ctx.push(TitlePage(ctx, r)))
+        btns.addWidget(tb)
+        btns.addStretch()
+        col.addLayout(btns)
+        col.addStretch()
+        top.addLayout(col, 1)
+        tw = QWidget()
+        tw.setLayout(top)
+        self.body.addWidget(tw)
+        legend = QHBoxLayout()
+        legend.setSpacing(18)
+        for st, text in (("have", "In your library"), ("missing", "Out, on its way"), ("future", "Not out yet")):
+            sw = QLabel()
+            bg, fg, border = EpisodeTile.STYLE[st]
+            sw.setFixedSize(18, 14)
+            sw.setStyleSheet(f"background: {bg}; border: 1.5px {border}; border-radius: 4px;")
+            legend.addWidget(sw)
+            legend.addWidget(label(text, "Muted"))
+        legend.addStretch()
+        lw = QWidget()
+        lw.setLayout(legend)
+        self.body.addWidget(lw)
+        self.seasons_box = QWidget()
+        self.seasons = QVBoxLayout(self.seasons_box)
+        self.seasons.setContentsMargins(0, 0, 0, 0)
+        self.seasons.setSpacing(20)
+        self.body.addWidget(self.seasons_box)
+        self.body.addStretch()
+        if r.get("progress") is not None:
+            self._show(r["progress"])
+        else:
+            self.seasons.addWidget(loading_widget())
+            run_bg(lambda: tv_progress(ctx, r), self._show,
+                   lambda e: self.summary.setText(f"Couldn't check the episodes: {e}"))
+
+    def _show(self, prog):
+        while self.seasons.count():
+            it = self.seasons.takeAt(0)
+            if it.widget():
+                it.widget().hide()
+                it.widget().deleteLater()
+        txt, color = progress_text(prog)
+        self.summary.setText(txt)
+        self.summary.setStyleSheet(f"color: {color};")
+        for s in prog:
+            box = QWidget()
+            v = QVBoxLayout(box)
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(8)
+            have = sum(1 for e in s["eps"] if e["state"] == "have")
+            out = sum(1 for e in s["eps"] if e["state"] != "future")
+            head = label(s["name"], "H2")
+            v.addWidget(head)
+            if s["eps"]:
+                v.addWidget(label(f"{have} of {len(s['eps'])} here  ·  {out} out so far", "Muted"))
+                v.addWidget(flow_box([EpisodeTile(e) for e in s["eps"]], 8, 0))
+            else:
+                v.addWidget(label("No episode list yet.", "Muted"))
+            self.seasons.addWidget(box)

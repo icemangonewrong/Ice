@@ -122,9 +122,9 @@ class NavButton(QPushButton):
 
 
 class MainWindow(QMainWindow):
-    TABS = [("Home", "home"), ("Discover", "compass"), ("Libraries", "grid"), ("Search", "search"),
-            ("Settings", "gear")]
-    LIBRARIES, SEARCH, SETTINGS = 2, 3, 4
+    TABS = [("Home", "home"), ("Discover", "compass"), ("Requests", "requests"), ("Libraries", "grid"),
+            ("Search", "search"), ("Settings", "gear")]
+    REQUESTS, LIBRARIES, SEARCH, SETTINGS = 2, 3, 4, 5
 
     def __init__(self):
         super().__init__()
@@ -278,11 +278,11 @@ class MainWindow(QMainWindow):
         self.current_tab = i
         self.nav_buttons[i].setChecked(True)
         if i not in self.tab_roots:
-            from .discover import DiscoverPage
-            page = [HomePage, DiscoverPage, LibrariesPage, SearchPage, SettingsPage][i](self.ctx)
+            from .discover import DiscoverPage, RequestsPage
+            page = [HomePage, DiscoverPage, RequestsPage, LibrariesPage, SearchPage, SettingsPage][i](self.ctx)
             self.tab_roots[i] = page
             self.stack.addWidget(page)
-        elif hasattr(self.tab_roots[i], "refresh") and i in (1, self.LIBRARIES, self.SETTINGS):
+        elif hasattr(self.tab_roots[i], "refresh") and i in (1, self.REQUESTS, self.LIBRARIES, self.SETTINGS):
             self.tab_roots[i].refresh()
         page = self.tab_roots[i]
         self.stack.setCurrentWidget(page)
