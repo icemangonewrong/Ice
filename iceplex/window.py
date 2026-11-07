@@ -66,6 +66,8 @@ class Context(QObject):
     def seerr(self):
         """Seerr connection for the current address and Plex account, or None if no address is set."""
         from .seerr import Seerr
+        if (self.settings["seerrUrl"] or "").strip().rstrip("/") == "http://10.66.66.1:5055":
+            self.settings["seerrUrl"] = "http://10.66.66.1:5056"   # the first default had the wrong port
         url, token = (self.settings["seerrUrl"] or "").strip(), self.settings["token"]
         if not url or not token:
             return None
