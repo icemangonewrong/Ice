@@ -475,6 +475,17 @@ class SearchPage(ScrollPage):
         self.grid = QWidget()
         self.flow = FlowLayout(self.grid, spacing=20)
         self.body.addWidget(self.grid)
+        # Everything else (not in the library), from Seerr, to request.
+        self.req_head = label("Not in your library · request with Seerr", "H2")
+        self.req_head.hide()
+        self.body.addSpacing(18)
+        self.body.addWidget(self.req_head)
+        self.req_msg = label("", "Muted", wrap=True)
+        self.req_msg.hide()
+        self.body.addWidget(self.req_msg)
+        self.req_grid = QWidget()
+        self.req_flow = FlowLayout(self.req_grid, spacing=20)
+        self.body.addWidget(self.req_grid)
         self.body.addStretch()
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
@@ -492,11 +503,43 @@ class SearchPage(ScrollPage):
         gen = self._gen
         if len(text) < 2:
             self._fill([])
+            self._fill_requests([])
+            self.req_head.hide()
+            self.req_msg.hide()
             self.msg.setText("")
             return
         self.spinner.show()
         self.msg.setText("")
         run_bg(lambda: self.ctx.client.search(text), lambda r: self._got(gen, r), lambda e: self._got(gen, []))
+        sr = self.ctx.seerr()
+        if sr:
+            run_bg(lambda: sr.search(text), lambda r: self._got_requests(gen, r),
+                   lambda e: self._got_requests(gen, None, str(e)))
+
+    def _got_requests(self, gen, results, error=None):
+        if gen != self._gen:
+            return
+        self.req_head.show()
+        if error:
+            self.req_msg.setText(f"Couldn't search Seerr: {error}")
+            self.req_msg.show()
+            self._fill_requests([])
+            return
+        # Things already in Plex show up in the results above, so leave them out here.
+        results = [r for r in results or [] if r["status"] != 5]
+        self.req_msg.setText("" if results else "Nothing else found.")
+        self.req_msg.setVisible(not results)
+        self._fill_requests(results)
+
+    def _fill_requests(self, results):
+        while self.req_flow.count():
+            it = self.req_flow.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for r in results:
+            c = RequestCard(r)
+            c.clicked.connect(lambda r=r: self.ctx.push(RequestPage(self.ctx, r)))
+            self.req_flow.addWidget(c)
 
     def _got(self, gen, items):
         if gen != self._gen:
@@ -613,6 +656,34 @@ class SettingsPage(ScrollPage):
         self.body.addWidget(tap)
         note = label("When this is off, clicking the video just shows or hides the control bar.", "Muted", wrap=True)
         self.body.addWidget(note)
+
+        self.section("Requests (Seerr)", "Search shows everything, not just your library, and lets you request "
+                                         "what's missing through Seerr. Ice signs in with your Plex account.")
+        row = QHBoxLayout()
+        row.addWidget(label("Seerr address"))
+        row.addSpacing(12)
+        url = QLineEdit(s["seerrUrl"] or "")
+        url.setPlaceholderText("http://10.66.66.1:5055")
+        url.setMaximumWidth(360)
+        url.editingFinished.connect(lambda: self.ctx.settings.__setitem__("seerrUrl", url.text().strip()))
+        row.addWidget(url)
+        test = button("Test")
+        result = label("", "Muted")
+
+        def run_test():
+            self.ctx.settings["seerrUrl"] = url.text().strip()
+            sr = self.ctx.seerr()
+            if not sr:
+                result.setText("Enter the address first.")
+                return
+            result.setText("Checking…")
+            run_bg(sr.test, lambda name: result.setText(f"Connected as {name}"),
+                   lambda e: result.setText(str(e)))
+        test.clicked.connect(run_test)
+        row.addWidget(test)
+        row.addWidget(result)
+        row.addStretch()
+        self.body.addLayout(row)
 
         delays = s["audioDelays"] or {}
         self.section("Audio delay", "Set from the player's audio delay button. Each audio device keeps its own "
@@ -1076,6 +1147,173 @@ class SeasonDetailPage(DetailBase):
             h.addWidget(chk, 0, Qt.AlignTop)
         row.clicked.connect(lambda: self.ctx.open(ep))
         return row
+
+
+class RequestCard(QWidget):
+    """A search result from Seerr (not in the library)."""
+    clicked = Signal()
+
+    def __init__(self, r: dict, width: int = 160):
+        super().__init__()
+        from .seerr import STATUS_TEXT
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        self.img = ImageBox(width, int(width * 1.5))
+        self.img.set_url(r.get("poster"))
+        lay.addWidget(self.img)
+        t = label(r.get("title") or "")
+        t.setFont(theme.font(10, QFont.DemiBold))
+        t.setFixedWidth(width)
+        t.setText(t.fontMetrics().elidedText(t.text(), Qt.ElideRight, width))
+        lay.addWidget(t)
+        kind = "Movie" if r["kind"] == "movie" else "TV show"
+        sub = "  ·  ".join(x for x in (r.get("year"), kind, STATUS_TEXT.get(r.get("status"), "")) if x)
+        s = label(sub, "Muted")
+        s.setFont(theme.font(9))
+        lay.addWidget(s)
+        lay.addStretch()
+        self.setFixedWidth(width)
+
+    def mousePressEvent(self, e):
+        e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+
+
+class RequestPage(ScrollPage):
+    """Details of something not in the library, with a Request button (seasons to pick for shows)."""
+
+    def __init__(self, ctx, r: dict):
+        super().__init__()
+        self.ctx, self.r = ctx, r
+        self.title = r.get("title") or "Request"
+        self.body.setContentsMargins(32, 28, 32, 40)
+        self.body.setSpacing(12)
+        top = QHBoxLayout()
+        top.setSpacing(24)
+        img = ImageBox(200, 300, 10)
+        img.set_url(r.get("poster"))
+        top.addWidget(img, 0, Qt.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(label("Not in your library", "Accent"))
+        t = label(r.get("title") or "", "H1", wrap=True)
+        t.setMaximumWidth(800)
+        col.addWidget(t)
+        self.meta = label("  ·  ".join(x for x in (r.get("year"), "Movie" if r["kind"] == "movie" else "TV show") if x),
+                          "Muted")
+        col.addWidget(self.meta)
+        self.imdb = QLabel()
+        self.imdb.setStyleSheet("background: #f5c518; color: black; font-weight: 800; border-radius: 4px;"
+                                "padding: 2px 7px;")
+        self.imdb.hide()
+        col.addWidget(self.imdb, 0, Qt.AlignLeft)
+        self.overview = label(r.get("overview") or "", wrap=True)
+        self.overview.setMaximumWidth(800)
+        col.addSpacing(6)
+        col.addWidget(self.overview)
+        col.addStretch()
+        top.addLayout(col, 1)
+        wrap = QWidget()
+        wrap.setLayout(top)
+        self.body.addWidget(wrap)
+        self.box = QWidget()
+        self.actions = QVBoxLayout(self.box)
+        self.actions.setContentsMargins(0, 8, 0, 0)
+        self.actions.setSpacing(8)
+        self.body.addWidget(self.box)
+        self.note = label("Loading…", "Muted")
+        self.actions.addWidget(self.note)
+        self.body.addStretch()
+        self.seasons: list = []
+        self._load()
+
+    def _load(self):
+        sr = self.ctx.seerr()
+        r = self.r
+        if not sr:
+            self.note.setText("Set your Seerr address in Settings first.")
+            return
+
+        def fetch():
+            return sr.details(r["kind"], r["id"]), sr.imdb_rating(r["kind"], r["id"])
+
+        run_bg(fetch, self._show, lambda e: self.note.setText(f"Couldn't load from Seerr: {e}"))
+
+    def _show(self, res):
+        from .seerr import AVAILABLE, PENDING, PROCESSING, STATUS_TEXT
+        info, imdb = res
+        r = self.r
+        if imdb:
+            self.imdb.setText(f"IMDb  {imdb:.1f}")
+            self.imdb.show()
+        bits = [r.get("year"), "Movie" if r["kind"] == "movie" else "TV show"]
+        if info.get("runtime"):
+            bits.append(f"{info['runtime']} min")
+        bits += info.get("genres", [])[:3]
+        self.meta.setText("  ·  ".join(x for x in bits if x))
+        if info.get("overview"):
+            self.overview.setText(info["overview"])
+        # fresh action area
+        while self.actions.count():
+            w = self.actions.takeAt(0).widget()
+            if w:
+                w.hide()
+                w.deleteLater()
+        status = info.get("status")
+        if r["kind"] == "movie":
+            if status in (AVAILABLE, PENDING, PROCESSING):
+                self.actions.addWidget(label(f"✓  {STATUS_TEXT[status]}", "Accent"))
+            else:
+                b = primary("Request")
+                b.setMaximumWidth(260)
+                b.clicked.connect(lambda: self._request(None, b))
+                self.actions.addWidget(b)
+            return
+        # Shows: pick seasons.
+        self.seasons = []
+        self.actions.addWidget(label("Seasons", "H2"))
+        for s in info.get("seasons", []):
+            st = s["status"]
+            cb = QCheckBox(f"{s['name']}   ·   {s['episodes']} episodes"
+                           + (f"   ·   {STATUS_TEXT[st]}" if st in STATUS_TEXT else ""))
+            cb.setChecked(True)
+            if st in (AVAILABLE, PENDING, PROCESSING):
+                cb.setEnabled(False)
+            else:
+                self.seasons.append((s["number"], cb))
+            self.actions.addWidget(cb)
+        if not self.seasons:
+            self.actions.addWidget(label("✓  Every season is already available or requested.", "Accent"))
+            return
+        b = primary("Request selected seasons")
+        b.setMaximumWidth(320)
+        b.clicked.connect(lambda: self._request([n for n, c in self.seasons if c.isChecked()], b))
+        self.actions.addWidget(b)
+
+    def _request(self, seasons, btn):
+        sr = self.ctx.seerr()
+        r = self.r
+        if r["kind"] == "tv" and seasons is not None and not seasons:
+            btn.setText("Pick at least one season")
+            return
+        btn.setEnabled(False)
+        btn.setText("Requesting…")
+
+        def done(_):
+            btn.setText("✓  Requested")
+            for _n, c in self.seasons:
+                c.setEnabled(False)
+
+        def failed(e):
+            btn.setEnabled(True)
+            btn.setText(f"Couldn't request: {e}")
+
+        run_bg(lambda: sr.request(r["kind"], r["id"], seasons), done, failed)
 
 
 def detail_page(ctx, item: Item) -> QWidget:

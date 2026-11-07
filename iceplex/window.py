@@ -60,6 +60,19 @@ class Context(QObject):
         self.sections = []
         self.window.route()
 
+    # -- Seerr (requests) -----------------------------------------------------
+    _seerr = None
+
+    def seerr(self):
+        """Seerr connection for the current address and Plex account, or None if no address is set."""
+        from .seerr import Seerr
+        url, token = (self.settings["seerrUrl"] or "").strip(), self.settings["token"]
+        if not url or not token:
+            return None
+        if self._seerr is None or self._seerr.base != Seerr(url, token).base or self._seerr.token != token:
+            self._seerr = Seerr(url, token)
+        return self._seerr
+
     # -- libraries ------------------------------------------------------------
     def is_excluded(self, item: Item) -> bool:
         sec = item.section_id
