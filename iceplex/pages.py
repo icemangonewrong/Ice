@@ -484,7 +484,7 @@ class SearchPage(ScrollPage):
         self.people_flow = FlowLayout(self.people_grid, spacing=14)
         self.body.addWidget(self.people_grid)
         # Everything else (not in the library), from Seerr, to request.
-        self.req_head = label("Not in your library · request with Seerr", "H2")
+        self.req_head = label("From Seerr · request what you don't have", "H2")
         self.req_head.hide()
         self.body.addSpacing(18)
         self.body.addWidget(self.req_head)
@@ -553,8 +553,17 @@ class SearchPage(ScrollPage):
             self.req_msg.show()
             self._fill_requests([])
             return
-        # Things already in Plex show up in the results above, so leave them out here.
-        results = [r for r in results or [] if r["status"] != 5]
+        # Things already in Plex that showed up in the results above are left out here. Anything Seerr knows is
+        # in the library but Plex's search missed stays (with Play on it).
+        shown = getattr(self, "_plex_items", [])
+        keys = {i.key for i in shown}
+        tmdb = {(i.type, i.tmdb_id) for i in shown if i.tmdb_id}
+        names = {((i.title or "").lower(), str(i.get("year") or "")) for i in shown}
+        results = [r for r in results or [] if r["status"] != 5 or not (
+            (r.get("rating_key") and str(r["rating_key"]) in keys)
+            or ("movie" if r["kind"] == "movie" else "show", r["id"]) in tmdb
+            or ((r.get("title") or "").lower(), r.get("year") or "") in names)]
+        results.sort(key=lambda r: r.get("date") or "0000", reverse=True)
         self.req_msg.setText("" if results else "Nothing else found.")
         self.req_msg.setVisible(not results)
         self._fill_requests(results)
@@ -579,6 +588,10 @@ class SearchPage(ScrollPage):
         self._fill(items)
 
     def _fill(self, items):
+        # Newest first (library and Seerr alike).
+        items = sorted(items, key=lambda i: str(i.get("originallyAvailableAt") or (f"{i.get('year')}-00-00" if i.get("year") else "0000")),
+                       reverse=True)
+        self._plex_items = list(items)
         while self.flow.count():
             it = self.flow.takeAt(0)
             if it.widget():
