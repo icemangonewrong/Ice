@@ -127,11 +127,38 @@ def extras() -> Extras:
 # Opening things
 # ---------------------------------------------------------------------------
 
+def find_in_library(ctx, r: dict) -> Optional[Item]:
+    """The Plex item for a Seerr title that's in the library. Seerr usually says which one; when it doesn't,
+    look it up in Plex by its TMDB id (or title and year)."""
+    want = "movie" if r["kind"] == "movie" else "show"
+    if r.get("rating_key"):
+        return Item({"ratingKey": str(r["rating_key"]), "type": want, "title": r.get("title")})
+    try:
+        hits = [i for i in ctx.client.search(r.get("title") or "") if i.type == want]
+    except Exception:  # noqa: BLE001
+        return None
+    for i in hits:
+        if i.tmdb_id == r.get("id"):
+            return i
+    for i in hits:
+        if (i.title or "").lower() == (r.get("title") or "").lower() and str(i.get("year") or "") == str(r.get("year") or ""):
+            return i
+    return None
+
+
+def play_from_library(ctx, item: Item):
+    """Play a movie, or a show's next episode."""
+    if item.type == "show":
+        run_bg(lambda: ctx.client.next_episode(item.key), lambda ep: ep and ctx.play(ep))
+    else:
+        ctx.play(item)
+
+
 def open_result(ctx, r: dict):
     """In your library: open it there (to play). Otherwise its title page."""
-    if r.get("status") == AVAILABLE and r.get("rating_key"):
-        ctx.open(Item({"ratingKey": str(r["rating_key"]), "type": "movie" if r["kind"] == "movie" else "show",
-                       "title": r.get("title")}))
+    if r.get("status") == AVAILABLE:
+        run_bg(lambda: find_in_library(ctx, r), lambda it: ctx.open(it) if it else ctx.push(TitlePage(ctx, r)),
+               lambda e: ctx.push(TitlePage(ctx, r)))
     else:
         ctx.push(TitlePage(ctx, r))
 
@@ -234,7 +261,11 @@ class SeerrCard(QWidget):
     def enterEvent(self, e):
         self.img.highlight = True
         self.img.update()
-        if status_of(self.r) is None and self.ctx.seerr():
+        if status_of(self.r) == "lib":
+            self.req.setText("▶  Play")
+            self.req.show()
+            self.req.raise_()
+        elif status_of(self.r) is None and self.ctx.seerr():
             self.req.show()
             self.req.raise_()
 
@@ -245,6 +276,10 @@ class SeerrCard(QWidget):
             self.req.hide()
 
     def _request(self):
+        if status_of(self.r) == "lib":   # in the library: the button plays it
+            r = self.r
+            run_bg(lambda: find_in_library(self.ctx, r), lambda it: it and play_from_library(self.ctx, it))
+            return
         self.req.setEnabled(False)
         self.req.setText("Requesting…")
 
@@ -903,12 +938,24 @@ class TitlePage(ScrollPage):
         row.setContentsMargins(32, 0, 32, 0)
         row.setSpacing(12)
         st = info.get("status")
-        if st in (AVAILABLE, PARTIAL) and info.get("rating_key"):
-            p = primary("▶   Open in your library")
-            p.clicked.connect(lambda: self.ctx.open(Item({"ratingKey": str(info["rating_key"]),
-                                                          "type": "movie" if info["kind"] == "movie" else "show",
-                                                          "title": info.get("title")})))
-            row.addWidget(p)
+        if st in (AVAILABLE, PARTIAL):
+            # In the library: play it right here, or open its library page.
+            play = primary("▶   Play")
+            lib = button("Open in your library")
+            play.setEnabled(False)
+            lib.setEnabled(False)
+            row.addWidget(play)
+            row.addWidget(lib)
+
+            def found(it):
+                if not it:
+                    play.setText("Not found in Plex")
+                    return
+                play.setEnabled(True)
+                lib.setEnabled(True)
+                play.clicked.connect(lambda: play_from_library(self.ctx, it))
+                lib.clicked.connect(lambda: self.ctx.open(it))
+            run_bg(lambda: find_in_library(self.ctx, info), found, lambda e: None)
         self.req_btn = None
         if info["kind"] == "movie":
             if st in (PENDING, PROCESSING):
