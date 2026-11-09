@@ -57,6 +57,8 @@ class Settings:
         "muted": False,
         "geometry": None,
         "maximized": False,
+        "mirrorDevice": "",   # second headphones that also get the sound ("" = off)
+        "mirrorDelayMs": 0,
         "seerrUrl": "",   # Seerr, for Discover and requesting things not in the library (none until it's set up)
     }
 

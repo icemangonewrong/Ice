@@ -7,7 +7,7 @@ from typing import Optional
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QProgressBar, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
+                               QProgressBar, QPushButton, QSizePolicy, QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
 from . import theme
 from .config import BUFFER_CHOICES
@@ -727,6 +727,48 @@ class SettingsPage(ScrollPage):
         row.addWidget(result)
         row.addStretch()
         self.body.addLayout(row)
+
+        from . import mirror
+        if mirror.available():
+            self.section("Second headphones", "Also play the sound on a second Bluetooth headset, so two people can "
+                         "listen (for example two pairs of AirPods). Connect both to Windows first. Ice copies the sound "
+                         "to the second pair while a video plays.")
+            row = QHBoxLayout()
+            row.addWidget(label("Also play sound on"))
+            row.addSpacing(12)
+            dev = NoWheelCombo()
+            dev.addItem("Off", "")
+            names = mirror.output_names()
+            cur = s["mirrorDevice"] or ""
+            if cur and cur not in names:
+                names.append(cur)
+            for n in names:
+                dev.addItem(n, n)
+            dev.setCurrentIndex(max(0, dev.findData(cur)))
+            dev.setMinimumWidth(320)
+            row.addWidget(dev)
+            row.addSpacing(20)
+            row.addWidget(label("Delay"))
+            delay = QSpinBox()
+            delay.setRange(0, 600)
+            delay.setSingleStep(10)
+            delay.setSuffix(" ms")
+            delay.setValue(int(s["mirrorDelayMs"] or 0))
+            row.addWidget(delay)
+            row.addStretch()
+            self.body.addLayout(row)
+            self.body.addWidget(label("Pick the second pair here. The first pair is whatever Windows is playing to. "
+                                      "If the second pair sounds ahead of the first, raise the delay a little.",
+                                      "Muted", wrap=True))
+
+            def changed(*_):
+                self.ctx.settings["mirrorDevice"] = dev.currentData() or ""
+                self.ctx.settings["mirrorDelayMs"] = delay.value()
+                p = getattr(self.ctx.window, "player", None)
+                if p:
+                    p.apply_mirror()
+            dev.currentIndexChanged.connect(changed)
+            delay.valueChanged.connect(changed)
 
         delays = s["audioDelays"] or {}
         self.section("Audio delay", "Set from the player's audio delay button. Each audio device keeps its own "

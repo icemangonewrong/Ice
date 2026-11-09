@@ -59,6 +59,7 @@ jobs:
           --add-data "assets;assets"
           --add-binary "libmpv-2.dll;."
           --collect-submodules iceplex
+          --collect-all soundcard
           main.py
 
       - name: Check the build

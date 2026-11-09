@@ -494,11 +494,15 @@ class PlayerPage(QWidget):
     closed = Signal()
     toggle_fullscreen = Signal()
     mode_changed = Signal(str)      # "full" or "mini"
+    mirror_msg = Signal(str)        # second headphones status (from the copy thread)
 
     HIDE_AFTER_MS = 3000
 
     def __init__(self, ctx, parent=None):
         super().__init__(parent)
+        from .mirror import Mirror
+        self.mirror_msg.connect(lambda t: self.active and self._toast(t))
+        self.mirror = Mirror(on_status=self.mirror_msg.emit)
         self.ctx = ctx
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
@@ -956,7 +960,16 @@ class PlayerPage(QWidget):
         self.poll.start()
         self.report_timer.start()
         self.device_timer.start()
+        self.apply_mirror()
         self._fetch_extras(item)
+
+    def apply_mirror(self):
+        """Second headphones on/off per Settings (only while something plays)."""
+        s = self.ctx.settings
+        if self.active and s["mirrorDevice"]:
+            self.mirror.start(s["mirrorDevice"], int(s["mirrorDelayMs"] or 0))
+        else:
+            self.mirror.stop()
 
     def _fetch_extras(self, item: Item):
         """Markers, external subtitles and the next episode, fetched while the video starts."""
@@ -1193,6 +1206,7 @@ class PlayerPage(QWidget):
         if not self.active:
             return
         self.active = False
+        self.mirror.stop()
         for t in (self.poll, self.report_timer, self.retry_timer, self.hide_timer, self.device_timer):
             t.stop()
         item, t, d = self.item, self.cur, self.dur
@@ -1235,6 +1249,7 @@ class PlayerPage(QWidget):
                 except Exception:
                     pass
         self.active = False
+        self.mirror.stop()
         self.video.shutdown()
 
     def _fatal(self, msg: str):
