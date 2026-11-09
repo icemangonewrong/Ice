@@ -57,7 +57,7 @@ class Settings:
         "muted": False,
         "geometry": None,
         "maximized": False,
-        "seerrUrl": "http://10.66.66.1:5056",   # Seerr, for searching and requesting things not in the library
+        "seerrUrl": "",   # Seerr, for Discover and requesting things not in the library (none until it's set up)
     }
 
     def __init__(self):

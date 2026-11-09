@@ -146,6 +146,25 @@ class Item:
         return None
 
     @property
+    def tmdb_id(self) -> Optional[int]:
+        for g in self.d.get("Guid") or []:
+            gid = str(g.get("id") or "")
+            if gid.startswith("tmdb://") and gid[7:].isdigit():
+                return int(gid[7:])
+        return None
+
+    @property
+    def air_date(self) -> str:
+        """'Aug 12, 2026' (when it first aired / came out)."""
+        s = str(self.d.get("originallyAvailableAt") or "")
+        try:
+            import datetime
+            d = datetime.date.fromisoformat(s[:10])
+            return f"{d.strftime('%b')} {d.day}, {d.year}"
+        except ValueError:
+            return ""
+
+    @property
     def imdb_rating(self) -> Optional[float]:
         """The IMDb score: from IMDb's daily ratings file (works for every library and every episode),
         otherwise whatever the server has (library's ratings source set to IMDb)."""

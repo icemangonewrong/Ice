@@ -6,7 +6,7 @@ from typing import Optional
 
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QProgressBar, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from . import theme
@@ -1060,6 +1060,25 @@ class PlayableDetailPage(DetailBase):
 
 
 class ShowDetailPage(DetailBase):
+    def _got_schedule(self, sch):
+        import datetime
+        nxt = sch.get("next") if sch else None
+        if not nxt:
+            if sch and sch.get("status") in ("Ended", "Canceled"):
+                self.next_air.setText(f"{sch['status']}" + (f"  ·  last episode {sch['last_date']}" if sch.get("last_date") else ""))
+                self.next_air.setStyleSheet(f"color: {theme.MUTED};")
+                self.next_air.show()
+            return
+        try:
+            d = datetime.date.fromisoformat(nxt["date"][:10])
+            today = datetime.date.today()
+            when = f"{d.strftime('%a')}, {d.strftime('%b')} {d.day}" + ("" if d.year == today.year else f", {d.year}")
+        except (ValueError, KeyError):
+            when = "date not announced"
+        name = f' "{nxt["name"]}"' if nxt.get("name") else ""
+        self.next_air.setText(f"Next episode: {nxt['code']}{name}  ·  {when}")
+        self.next_air.show()
+
     def refresh(self):
         key = self.item.key
 
@@ -1083,6 +1102,15 @@ class ShowDetailPage(DetailBase):
         self.clear()
         self.add(self.header(d.get("art"), d.get("thumb"), d.get("studio") or "", d.title,
                              [meta_line(d, len(seasons)), "  ·  ".join(d.tags("Genre")[:4])], imdb=d.imdb_rating))
+        # Release schedule (from Seerr): when the next episode comes out.
+        self.next_air = label("", "Accent")
+        self.next_air.setFont(theme.font(11, QFont.DemiBold))
+        self.next_air.hide()
+        self.add(self.padded(self.next_air))
+        sr = self.ctx.seerr()
+        if sr and d.tmdb_id:
+            tid = d.tmdb_id
+            run_bg(lambda: sr.schedule(tid), self._got_schedule, lambda e: None)
         row = QHBoxLayout()
         row.setContentsMargins(32, 0, 32, 0)
         row.setSpacing(12)
@@ -1153,8 +1181,58 @@ class SeasonDetailPage(DetailBase):
         for ep in eps:
             v.addWidget(self._episode_row(ep))
         self.add(lst)
+        # Episodes not here yet (from Seerr): the ones still to air with their dates, and any that are out but missing.
+        self.coming = QWidget()
+        self.coming_lay = QVBoxLayout(self.coming)
+        self.coming_lay.setContentsMargins(32, 0, 32, 0)
+        self.coming_lay.setSpacing(8)
+        self.add(self.coming)
         self.body.addStretch()
+        self._load_coming(d, eps)
         QTimer.singleShot(0, lambda: self.verticalScrollBar().setValue(sb))
+
+    def _load_coming(self, season: Item, eps: list):
+        sr = self.ctx.seerr()
+        show_key, n = season.get("parentRatingKey"), season.get("index")
+        if not sr or not show_key or n is None:
+            return
+        have = {e.get("index") for e in eps}
+
+        def fetch():
+            show = self.ctx.client.metadata(str(show_key))
+            tid = show.tmdb_id if show else None
+            return sr.season_episodes(tid, int(n)) if tid else []
+
+        def got(rows):
+            import datetime
+            today = datetime.date.today()
+            later = [r for r in rows if r["number"] not in have]
+            if not later:
+                return
+            head = label("Not in your library yet", "H2")
+            self.coming_lay.addSpacing(10)
+            self.coming_lay.addWidget(head)
+            for r in later:
+                try:
+                    d = datetime.date.fromisoformat(r["air_date"][:10])
+                except ValueError:
+                    d = None
+                when = (f"Airs {d.strftime('%a')}, {d.strftime('%b')} {d.day}" + ("" if d.year == today.year else f", {d.year}")
+                        if d and d > today else (f"Aired {d.strftime('%b')} {d.day}, {d.year}" if d else "Air date not announced"))
+                row = QFrame()
+                row.setObjectName("ComingRow")
+                row.setMaximumWidth(1100)
+                row.setStyleSheet(f"QFrame#ComingRow {{ border: 1px dashed {theme.LINE}; border-radius: 10px; }}")
+                h = QHBoxLayout(row)
+                h.setContentsMargins(16, 10, 16, 10)
+                h.setSpacing(16)
+                t = label(f"{r['number']}. {r['name'] or 'Episode ' + str(r['number'])}", "H3")
+                h.addWidget(t, 1)
+                w = label(when, "Accent" if d and d > today else "Muted")
+                h.addWidget(w)
+                self.coming_lay.addWidget(row)
+
+        run_bg(fetch, got, lambda e: None)
 
     def _episode_row(self, ep: Item) -> QWidget:
         row = ClickRow()
@@ -1165,16 +1243,15 @@ class SeasonDetailPage(DetailBase):
         img = ImageBox(224, 126, 8)
         img.set_url(self.ctx.client.image_url(ep.get("thumb"), 448, 252))
         img.progress = ep.progress
-        img.rating = ep.imdb_rating
         h.addWidget(img)
         col = QVBoxLayout()
         col.setSpacing(4)
         num = f"{ep.get('index')}. " if ep.get("index") is not None else ""
         col.addWidget(label(num + ep.title, "H3"))
-        meta = runtime_str(ep.duration_ms) if ep.duration_ms else ""
+        bits = [ep.air_date, runtime_str(ep.duration_ms) if ep.duration_ms else ""]
         if ep.progress is not None:
-            meta += f"  ·  {runtime_str(max(ep.duration_ms - ep.offset_ms, 0), True)} left"
-        col.addWidget(label(meta, "Muted"))
+            bits.append(f"{runtime_str(max(ep.duration_ms - ep.offset_ms, 0), True)} left")
+        col.addWidget(label("  ·  ".join(b for b in bits if b), "Muted"))
         if ep.get("summary"):
             s = label(ep.get("summary"), "Muted", wrap=True)
             s.setMaximumHeight(44)

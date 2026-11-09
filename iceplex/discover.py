@@ -398,7 +398,10 @@ def section_title(text: str) -> QLabel:
 def needs_seerr(page: ScrollPage, ctx) -> bool:
     if ctx.seerr():
         return False
-    page.body.addWidget(message_widget("Discover uses your Seerr.\nSet its address in Settings → Requests (Seerr)."))
+    page.body.addWidget(message_widget("Discover and requests use Seerr.\nSet it up in Settings → Requests (Seerr)."))
+    b = primary("Open Settings")
+    b.clicked.connect(lambda: ctx.window.switch_tab(ctx.window.SETTINGS))
+    page.body.addWidget(centered(b))
     page.body.addStretch()
     return True
 

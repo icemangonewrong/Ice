@@ -380,6 +380,24 @@ class Seerr:
                                 if nxt.get("seasonNumber") is not None else "")
         return out
 
+    def schedule(self, tmdb_id: int) -> dict:
+        """A show's release schedule: next episode (code, name, date), whether it has ended."""
+        d = self._call("GET", f"/tv/{tmdb_id}")
+        out = {"status": d.get("status") or "", "next": None, "last_date": ""}
+        n = d.get("nextEpisodeToAir") or {}
+        if n.get("seasonNumber") is not None:
+            out["next"] = {"code": f"S{n.get('seasonNumber')} E{n.get('episodeNumber')}", "name": n.get("name") or "",
+                           "date": n.get("airDate") or ""}
+        last = (d.get("lastEpisodeToAir") or {}).get("airDate") or ""
+        if last:
+            import datetime
+            try:
+                x = datetime.date.fromisoformat(last[:10])
+                out["last_date"] = f"{x.strftime('%b')} {x.day}, {x.year}"
+            except ValueError:
+                pass
+        return out
+
     def season_episodes(self, tmdb_id: int, season: int) -> list[dict]:
         d = self._call("GET", f"/tv/{tmdb_id}/season/{season}")
         return [{"number": e.get("episodeNumber"), "name": e.get("name") or "", "air_date": e.get("airDate") or ""}

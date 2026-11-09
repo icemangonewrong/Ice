@@ -248,7 +248,8 @@ class PosterCard(QWidget):
         self.img.set_url(client.image_url(path, width * 2, h * 2))
         self.img.progress = item.progress
         self.img.check = item.show_check
-        self.img.rating = item.imdb_rating
+        # IMDb score on movies, shows and seasons; not on single episodes.
+        self.img.rating = None if item.type == "episode" else item.imdb_rating
         self.img.highlight = current
         lay.addWidget(self.img)
         # Like Plex: under an episode, the show name opens the show (all seasons) and "S2 · E5" opens that
