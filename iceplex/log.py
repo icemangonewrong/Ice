@@ -9,12 +9,27 @@ import logging
 import logging.handlers
 import os
 import platform
+import re
 import sys
 import threading
 from pathlib import Path
 
 _log = logging.getLogger("ice")
 _ready = False
+
+# The Plex token must never reach the log (the log gets shared when tracking down a problem).
+_TOKEN = re.compile(r"""(X-Plex-Token(?:=|%3D|['"]?:\s*['"]?))[^&\s"'<>]+""", re.IGNORECASE)
+
+
+def scrub(text: str) -> str:
+    return _TOKEN.sub(r"\1***", text)
+
+
+class _Scrubbed(logging.Formatter):
+    """Formats a line (crash tracebacks included), then blanks out any Plex token in it."""
+
+    def format(self, record):
+        return scrub(super().format(record))
 
 
 def log_dir() -> Path:
@@ -65,7 +80,7 @@ def setup():
     _log.setLevel(logging.DEBUG)
     try:
         h = logging.handlers.RotatingFileHandler(log_file(), maxBytes=3_000_000, backupCount=4, encoding="utf-8")
-        h.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d  %(message)s", "%Y-%m-%d %H:%M:%S"))
+        h.setFormatter(_Scrubbed("%(asctime)s.%(msecs)03d  %(message)s", "%Y-%m-%d %H:%M:%S"))
         _log.addHandler(h)
     except Exception:  # noqa: BLE001  (no log is better than no app)
         return

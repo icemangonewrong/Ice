@@ -983,6 +983,7 @@ class PlayerPage(QWidget):
                  + f"  (key {item.key}, from {time_str(resume)}, {item.media.get('videoResolution', '?')} "
                  f"{item.media.get('videoCodec', '?')}/{item.media.get('audioCodec', '?')}, "
                  f"{item.media.get('bitrate', '?')} kbps, {item.part.get('container', '?')}, buffer {int(self.readahead) // 60} min)")
+        log.info(f"Server address: {self.ctx.client.address_line()}")
 
     def _fetch_extras(self, item: Item):
         """Markers, external subtitles and the next episode, fetched while the video starts."""
@@ -1669,7 +1670,7 @@ class PlayerPage(QWidget):
 
     def _retry(self):
         if self.active and self.item:
-            log.info(f"Reopening the stream at {time_str(self.cur)} (straight from the server)")
+            log.info(f"Reopening the stream at {time_str(self.cur)} (straight from the server, {self.ctx.client.address_line()})")
             self._last_reopen = time.monotonic()
             self._open(self.cur, direct=True)
 

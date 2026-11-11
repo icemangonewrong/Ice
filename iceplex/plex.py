@@ -331,6 +331,18 @@ class PlexClient:
             "allURIs": uris,
         }
 
+    def address_line(self) -> str:
+        """Which of the server's addresses is in use, for the log (host and port only, never the token)."""
+        s = self.server
+        if not s:
+            return "no server"
+        uris = s.get("allURIs") or []
+        base = s.get("baseURL") or ""
+        u = urllib.parse.urlsplit(base)
+        where = f"{u.scheme}://{u.hostname}:{u.port}" if u.port else f"{u.scheme}://{u.hostname}"
+        n = uris.index(base) + 1 if base in uris else 0
+        return f"{where} (address {n or '?'} of {len(uris)}, tried in order: local, remote, relay)"
+
     # -- server requests (fail over between addresses) -------------------------
 
     def get(self, path: str, params=None, timeout=15) -> dict:
@@ -349,6 +361,7 @@ class PlexClient:
                 raise
             s = dict(s, baseURL=working)
             self.server = s
+            print(f"SERVER ADDRESS changed (the old one stopped answering): now {self.address_line()}")
             if self.on_server_changed:
                 self.on_server_changed(s)
             return self._req("GET", working + path, token=s["accessToken"],
