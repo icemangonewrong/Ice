@@ -235,9 +235,19 @@ class HomePage(ScrollPage):
         self.ctx = ctx
         self.body.setContentsMargins(0, 28, 0, 40)
         self._gen = 0
+        self._shown = False
+        self._loaded_at = 0.0
         self.refresh()
 
+    def refresh_if_stale(self):
+        """Home shown again (tab, back button, Ice brought to the front): bring it up to date, at most every 20 s."""
+        import time
+        if time.monotonic() - self._loaded_at > 20:
+            self.refresh()
+
     def refresh(self):
+        import time
+        self._loaded_at = time.monotonic()
         self._gen += 1
         gen = self._gen
         if self.body.count() == 0:
@@ -263,6 +273,9 @@ class HomePage(ScrollPage):
     def _error(self, gen, e):
         if gen != self._gen:
             return
+        if self._shown:
+            print(f"Home refresh failed, keeping what's shown: {e}")
+            return
         self.clear()
         self.body.addWidget(message_widget(f"Couldn't load from your server.\n{e}"))
         b = button("Try again")
@@ -274,6 +287,7 @@ class HomePage(ScrollPage):
         if gen != self._gen:
             return
         self.ctx.sections = sections
+        self._shown = True
         sb = self.verticalScrollBar().value()
         self.clear()
         head = label(self.ctx.server_name(), "H1")

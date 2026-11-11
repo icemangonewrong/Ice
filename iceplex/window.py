@@ -282,6 +282,8 @@ class MainWindow(QMainWindow):
             page = [HomePage, DiscoverPage, RequestsPage, LibrariesPage, SearchPage, SettingsPage][i](self.ctx)
             self.tab_roots[i] = page
             self.stack.addWidget(page)
+        elif i == 0:
+            self.tab_roots[0].refresh_if_stale()
         elif hasattr(self.tab_roots[i], "refresh") and i in (1, self.REQUESTS, self.LIBRARIES, self.SETTINGS):
             self.tab_roots[i].refresh()
         page = self.tab_roots[i]
@@ -304,6 +306,14 @@ class MainWindow(QMainWindow):
         page.deleteLater()
         self.stack.setCurrentWidget(self.history[-1] if self.history else self.tab_roots[self.current_tab])
         self._update_back()
+        if not self.history and self.current_tab == 0:
+            self.tab_roots[0].refresh_if_stale()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        # Ice brought back to the front: bring Home up to date (Recently Added keeps up with new arrivals).
+        if e.type() == QEvent.ActivationChange and self.isActiveWindow() and 0 in self.tab_roots:
+            self.tab_roots[0].refresh_if_stale()
 
     def _update_back(self):
         self.back_btn.setVisible(bool(self.history))
