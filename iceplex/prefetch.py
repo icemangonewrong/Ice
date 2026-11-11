@@ -167,17 +167,22 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if head_only:
             return
+        sent_all = False
         try:
-            self._send(p, a, b)
+            sent_all = self._send(p, a, b)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as e:  # noqa: BLE001
-            print("preload serve:", e)
+            print(f"preload serve: lost the server at byte {a}: {e}")
+        if not sent_all:
+            # Hang up so the player notices at once and reconnects, instead of waiting on this connection for
+            # bytes that will never come.
+            self.close_connection = True
 
     def _send(self, p: Preload, a: int, b: int):
         self._up = None
         try:
-            self._send_range(p, a, b)
+            return self._send_range(p, a, b)
         finally:
             if self._up:
                 self._up.close()   # mpv hung up before using it
@@ -215,7 +220,9 @@ class _Handler(BaseHTTPRequestHandler):
                     if pos > up_end:
                         break
             if pos <= up_end:
-                return   # server cut off; mpv reconnects for the rest
+                print(f"preload serve: server cut off at byte {pos}")
+                return False   # mpv reconnects for the rest
+        return True
 
 
 def _open(url, start, end):

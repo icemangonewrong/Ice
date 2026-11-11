@@ -1075,7 +1075,7 @@ class PlayerPage(QWidget):
             except Exception as e:  # noqa: BLE001
                 print(f"mpv option {k}: {e}")
 
-    def _open(self, at: float):
+    def _open(self, at: float, direct: bool = False):
         m = self.video.mpv
         self.file_loaded = False
         url = self.ctx.client.direct_url(self.item)
@@ -1084,7 +1084,7 @@ class PlayerPage(QWidget):
             p = prefetch.find(self.item.key)    # warmed up from its info page
             if p:
                 self.preload = p
-        if p and p.key == self.item.key and p.head_len() > 0 and p.size:
+        if not direct and p and p.key == self.item.key and p.head_len() > 0 and p.size:
             local = prefetch.url_for(p)
             if local:
                 url = local
@@ -1646,73 +1646,79 @@ class PlayerPage(QWidget):
         elif eid == mpv.MpvEventID.PLAYBACK_RESTART:
             self.reloading = False
 
-    def _schedule_retry(self):
+    # ------------------------------------------------------------------ reconnecting
+    # When the video can't be read (connection dropped, server hiccup, network outage) or playback freezes,
+    # Ice reopens the stream itself at the spot where it stopped, directly from the Plex server, and keeps
+    # trying (3 s, 5 s, 10 s, 20 s, then every 30 s) until it plays again. Same as closing the player and
+    # pressing Resume, only automatic. Every step goes in the log, with the player's state, so we can see why.
+
+    RETRY_WAITS = [3, 5, 10, 20, 30]
+    FROZEN_WITH_DATA = 8.0     # not paused, video downloaded ahead, yet the picture doesn't move
+    NO_DATA = 12.0             # waiting for video and nothing has arrived for this long
+    SLOW_LIMIT = 90.0          # waiting for video this long even though bits trickle in
+
+    def _schedule_retry(self, why: str = "couldn't read the video"):
+        """Reopen at the current spot after a short wait (longer each time it fails)."""
+        if self.retry_timer.isActive():
+            return
         if not self.has_played:
             self.failures += 1
             if self.failures >= 4:
                 self._fatal("This video couldn't be played.\nCheck your connection to the Plex server.")
                 return
-        log.info(f"Couldn't read the video at {time_str(self.cur)} (try {self.failures}); retrying in 3 s")
+        wait = self.RETRY_WAITS[min(self._reconnects, len(self.RETRY_WAITS) - 1)]
+        self._reconnects += 1
+        self._stuck_since = self._stuck_since or time.monotonic()
+        log.warn(f"RECONNECT #{self._reconnects} in {wait} s: {why} at {time_str(self.cur)}. {self._state_line()}")
         self.reloading = True
-        self.retry_timer.start(3000)
+        self.retry_timer.start(wait * 1000)
 
     def _retry(self):
         if self.active and self.item:
-            log.info(f"Reopening at {time_str(self.cur)}")
-            self._open(self.cur)
-
-    # ------------------------------------------------------------------ stall watchdog
-    # Sometimes the picture just freezes: not paused, no spinner progress, and it only comes back after
-    # pausing and playing again. The watchdog does that for you: a quick pause/play nudge first, then, if
-    # it's still stuck, reopens the video at the same spot. Every step goes in the log.
-
-    STALL_WITH_DATA = 6.0      # seconds frozen with video already downloaded ahead → something's stuck
-    STALL_NO_DATA = 25.0       # seconds frozen while waiting for data (slow connection gets longer)
+            log.info(f"Reopening the stream at {time_str(self.cur)} (straight from the server)")
+            self._last_reopen = time.monotonic()
+            self._open(self.cur, direct=True)
 
     def _stall_reset(self):
         self._stall_pos = None
         self._stall_since = time.monotonic()
-        self._stall_step = 0
-        self._nudge_until = 0.0
+        self._reconnects = 0
+        self._stuck_since = None
+        self._last_reopen = 0.0
 
     def _watch_stall(self, t, paused, seeking, now):
-        if t is not None and (self._stall_pos is None or abs(float(t) - self._stall_pos) > 0.05):
-            if self._stall_step:
-                log.info(f"Playing again at {time_str(float(t))} (recovered)")
+        if t is not None and (not self.reloading or self.retry_timer.isActive()) and (self._stall_pos is None or abs(float(t) - self._stall_pos) > 0.05):
+            if self._stall_pos is not None and self._stuck_since:
+                log.info(f"Playing again at {time_str(float(t))} after {now - self._stuck_since:.0f} s"
+                         + (f" and {self._reconnects} reconnect(s)" if self._reconnects else ""))
+            if self.retry_timer.isActive():
+                self.retry_timer.stop()      # it came back by itself: no need to reopen
+                self.reloading = False
             self._stall_pos = float(t)
             self._stall_since = now
-            self._stall_step = 0
+            self._reconnects = 0
+            self._stuck_since = None
             return
         should_play = (self.has_played and not paused and not self.switching and not self.finishing
                        and not self.dragging and self.item is not None)
         if not should_play:
-            if self._stall_step and now < self._nudge_until and not self.user_paused:
-                return    # our own pause/play nudge, not you pausing
             self._stall_since = now
-            self._stall_step = 0
             return
+        if self.retry_timer.isActive():
+            return      # a reconnect is already on its way
         stuck = now - self._stall_since
-        limit = self.STALL_WITH_DATA if self.buffered >= 5 else self.STALL_NO_DATA
-        if self._stall_step == 0 and stuck > limit:
-            self._stall_step = 1
-            log.warn(f"STALL: frozen at {time_str(self.cur)} for {stuck:.0f} s, not paused. {self._state_line()}"
-                     " → nudging (pause/play)")
-            m = self.video.mpv
-            self._nudge_until = now + 2
-            try:
-                m.pause = True
-                QTimer.singleShot(300, lambda: self.active and not self.user_paused and setattr(m, "pause", False))
-            except Exception as e:  # noqa: BLE001
-                log.warn(f"nudge failed: {e}")
-        elif self._stall_step == 1 and stuck > limit + 6:
-            self._stall_step = 2
-            log.warn(f"STALL: still frozen after the nudge. {self._state_line()} → reopening at {time_str(self.cur)}")
-            self.reloading = True
-            self._open(self.cur)
-        elif self._stall_step == 2 and stuck > limit + 40:
-            self._stall_step = 1     # still nothing: go round again (nudge, then reopen)
-            self._stall_since = now - limit - 1
-            log.warn("STALL: reopening didn't help yet; trying again")
+        since_reopen = now - self._last_reopen
+        no_data = now - self.last_data
+        if self.reloading and since_reopen < 25:
+            return      # give the reopen time to connect
+        if self.reloading:
+            self._schedule_retry("reopening hasn't started playing")
+        elif self.buffered >= 3 and stuck > self.FROZEN_WITH_DATA:
+            self._schedule_retry(f"FROZEN {stuck:.0f} s with {self.buffered:.0f} s of video downloaded")
+        elif self.buffered < 3 and stuck > self.NO_DATA and no_data > self.NO_DATA:
+            self._schedule_retry(f"no video data for {no_data:.0f} s (connection lost?)")
+        elif self.buffered < 3 and stuck > self.SLOW_LIMIT:
+            self._schedule_retry(f"waiting {stuck:.0f} s for video on a slow connection")
 
     # ------------------------------------------------------------------ log helpers
 
@@ -1819,8 +1825,9 @@ class PlayerPage(QWidget):
         self.buffering = buffering
         self._log_tick(paused, pfc, buffering, now)
 
-        if self.offline and buffering:
-            self.status.setText("No signal — will pick up where it left off")
+        if (self.offline or self._reconnects) and buffering:
+            self.status.setText("No signal — will pick up where it left off" if not self._reconnects else
+                                f"Reconnecting… (try {self._reconnects}) — will pick up where it left off")
             self.status.show()
             self.signal_pill.hide()
         elif self.offline:
