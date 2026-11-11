@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import traceback
+import urllib.parse
 from collections import OrderedDict
 from typing import Callable, Optional
 
@@ -77,6 +78,7 @@ class ImageLoader(QObject):
         self.waiting: dict[str, list[Callable]] = {}
         self.tries: dict[str, int] = {}
         self.failed_logged = 0
+        print(f"Saved posters: {disk.cacheSize() // 1_000_000} MB in {disk.cacheDirectory()}")
 
     def load(self, url: Optional[str], callback: Callable[[QPixmap], None]):
         if not url:
@@ -91,38 +93,65 @@ class ImageLoader(QObject):
         self.waiting[url] = [callback]
         self._get(url)
 
-    def _get(self, url: str):
-        req = QNetworkRequest(QUrl(url))
-        # A request that never answers would otherwise hold one of the few connection slots forever, and
-        # every poster after it waits in line behind it (posters stop loading).
-        req.setTransferTimeout(12000)
-        req.setAttribute(QNetworkRequest.CacheLoadControlAttribute, QNetworkRequest.PreferCache)
-        reply = self.nam.get(req)
-        reply.finished.connect(lambda r=reply, u=url: self._finished(r, u))
+    @staticmethod
+    def _original(url: str) -> Optional[str]:
+        """For a Plex resized-poster URL, the server's original image (used if resizing keeps failing)."""
+        if "/photo/:/transcode?" not in url:
+            return None
+        base, q = url.split("/photo/:/transcode?", 1)
+        qs = urllib.parse.parse_qs(q)
+        path, token = (qs.get("url") or [""])[0], (qs.get("X-Plex-Token") or [""])[0]
+        if not path.startswith("/"):
+            return None
+        return f"{base}{path}{'&' if '?' in path else '?'}X-Plex-Token={urllib.parse.quote(token)}"
 
-    def _finished(self, reply: QNetworkReply, url: str):
+    def _get(self, url: str):
+        n = self.tries.get(url, 0)
+        fetch = (self._original(url) or url) if n >= 2 else url
+        req = QNetworkRequest(QUrl(fetch))
+        # A request that never answers would otherwise hold one of the few connection slots forever, and
+        # every poster after it waits in line behind it.
+        req.setTransferTimeout(12000)
+        # First try may come from the saved copy; retries always ask the server (the saved copy may be bad).
+        req.setAttribute(QNetworkRequest.CacheLoadControlAttribute,
+                         QNetworkRequest.PreferCache if n == 0 else QNetworkRequest.AlwaysNetwork)
+        reply = self.nam.get(req)
+        reply.finished.connect(lambda r=reply, u=url, f=fetch: self._finished(r, u, f))
+
+    def _finished(self, reply: QNetworkReply, url: str, fetch: str):
         callbacks = self.waiting.pop(url, [])
         pix = None
+        data = b""
         if reply.error() == QNetworkReply.NoError:
+            data = bytes(reply.readAll())
             img = QImage()
-            if img.loadFromData(reply.readAll()):
+            if img.loadFromData(data):
                 pix = QPixmap.fromImage(img)
-        err = reply.errorString() if pix is None else ""
+        if pix is None:
+            status = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+            cached = reply.attribute(QNetworkRequest.SourceIsFromCacheAttribute)
+            why = (f"HTTP {status}, {str(reply.error()).split('.')[-1] if reply.error() != QNetworkReply.NoError else 'not a picture'}, "
+                   f"{len(data)} bytes, type {reply.header(QNetworkRequest.ContentTypeHeader)}, "
+                   f"{'saved copy' if cached else 'from server'}"
+                   f"{', original image' if fetch != url else ''}")
+            try:
+                self.nam.cache().remove(QUrl(fetch))     # never reuse a bad saved copy
+            except Exception:  # noqa: BLE001
+                pass
         reply.deleteLater()
         if pix is None:
             n = self.tries.get(url, 0) + 1
+            if self.failed_logged < 60:
+                self.failed_logged += 1
+                print(f"poster failed (try {n}): {why}  {fetch.split('X-Plex-Token')[0][-120:]}")
             if n <= 3:
-                # Try again shortly (server busy, connection blip).
                 self.tries[url] = n
                 again = url not in self.waiting      # (a new request for it may already be on its way)
                 self.waiting[url] = callbacks + self.waiting.get(url, [])
                 if again:
-                    QTimer.singleShot(2000 * n, lambda u=url: self._get(u))
+                    QTimer.singleShot(1000 * n, lambda u=url: self._get(u))
                 return
             self.tries.pop(url, None)
-            if self.failed_logged < 30:
-                self.failed_logged += 1
-                print(f"image failed after retries: {err}  {url.split('?')[0][-80:]}")
             return
         self.tries.pop(url, None)
         self.mem[url] = pix
