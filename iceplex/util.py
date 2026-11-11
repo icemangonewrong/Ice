@@ -5,7 +5,7 @@ import traceback
 from collections import OrderedDict
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QUrl, Signal, Qt
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, QUrl, Signal, Qt
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkDiskCache, QNetworkRequest, QNetworkReply
 
@@ -75,6 +75,8 @@ class ImageLoader(QObject):
         self.nam.setCache(disk)
         self.mem: OrderedDict[str, QPixmap] = OrderedDict()
         self.waiting: dict[str, list[Callable]] = {}
+        self.tries: dict[str, int] = {}
+        self.failed_logged = 0
 
     def load(self, url: Optional[str], callback: Callable[[QPixmap], None]):
         if not url:
@@ -87,7 +89,13 @@ class ImageLoader(QObject):
             self.waiting[url].append(callback)
             return
         self.waiting[url] = [callback]
+        self._get(url)
+
+    def _get(self, url: str):
         req = QNetworkRequest(QUrl(url))
+        # A request that never answers would otherwise hold one of the few connection slots forever, and
+        # every poster after it waits in line behind it (posters stop loading).
+        req.setTransferTimeout(12000)
         req.setAttribute(QNetworkRequest.CacheLoadControlAttribute, QNetworkRequest.PreferCache)
         reply = self.nam.get(req)
         reply.finished.connect(lambda r=reply, u=url: self._finished(r, u))
@@ -99,9 +107,24 @@ class ImageLoader(QObject):
             img = QImage()
             if img.loadFromData(reply.readAll()):
                 pix = QPixmap.fromImage(img)
+        err = reply.errorString() if pix is None else ""
         reply.deleteLater()
         if pix is None:
+            n = self.tries.get(url, 0) + 1
+            if n <= 3:
+                # Try again shortly (server busy, connection blip).
+                self.tries[url] = n
+                again = url not in self.waiting      # (a new request for it may already be on its way)
+                self.waiting[url] = callbacks + self.waiting.get(url, [])
+                if again:
+                    QTimer.singleShot(2000 * n, lambda u=url: self._get(u))
+                return
+            self.tries.pop(url, None)
+            if self.failed_logged < 30:
+                self.failed_logged += 1
+                print(f"image failed after retries: {err}  {url.split('?')[0][-80:]}")
             return
+        self.tries.pop(url, None)
         self.mem[url] = pix
         while len(self.mem) > 600:
             self.mem.popitem(last=False)
