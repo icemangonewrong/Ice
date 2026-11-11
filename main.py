@@ -17,6 +17,8 @@ def _prepare_mpv_path():
 
 
 def main():
+    from iceplex import log
+    log.setup()
     _prepare_mpv_path()
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
@@ -39,6 +41,11 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Ice.Windows")
         except Exception:
             pass
+
+    for scr in app.screens():
+        g = scr.geometry()
+        log.info(f"Screen {scr.name()}: {g.width()}x{g.height()} at {scr.refreshRate():.2f} Hz, scale {scr.devicePixelRatio():g}"
+                 + ("  (main)" if scr is app.primaryScreen() else ""))
 
     from iceplex import theme
     from iceplex.pages import resource_path

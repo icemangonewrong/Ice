@@ -20,7 +20,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QMenu, QSlider, QToolButton, QVBoxLayout, QWidget, QPushButton)
 
-from . import audiodev, prefetch, theme
+from . import audiodev, log, prefetch, theme
 from .config import cache_dir
 from .plex import Item
 from .util import run_bg, time_str
@@ -45,7 +45,8 @@ class MpvWidget(QOpenGLWidget):
         locale.setlocale(locale.LC_NUMERIC, "C")
         self.mpv = mpv.MPV(vo="libmpv", keep_open="yes", idle="yes", osc="no", osd_level="0",
                            input_default_bindings="no", input_vo_keyboard="no", ytdl="no",
-                           terminal="no", audio_client_name="Ice")
+                           terminal="no", audio_client_name="Ice",
+                           log_handler=self._mpv_log, loglevel="warn")
         opts = {
             "hwdec": "auto-safe",
             "cache": "yes",
@@ -79,6 +80,10 @@ class MpvWidget(QOpenGLWidget):
         self.setMouseTracking(True)
 
     @staticmethod
+    def _mpv_log(level, component, message):
+        log.info(f"mpv [{level}] {component}: {str(message).strip()}")
+
+    @staticmethod
     def _get_proc(_ctx, name):
         glctx = QOpenGLContext.currentContext()
         if glctx is None:
@@ -89,7 +94,10 @@ class MpvWidget(QOpenGLWidget):
     def _on_event(self, event):
         eid = event.event_id.value
         if eid == mpv.MpvEventID.END_FILE:
-            self.mpv_event.emit(eid, int(event.data.reason))
+            reason = int(event.data.reason)
+            log.info(f"mpv: file ended, reason {reason} ({ {0: 'end', 2: 'stopped', 3: 'quit', 4: 'ERROR', 5: 'replaced'}.get(reason, '?') })"
+                     + (f", error {getattr(event.data, 'error', '')}" if reason == 4 else ""))
+            self.mpv_event.emit(eid, reason)
         elif eid in (mpv.MpvEventID.FILE_LOADED, mpv.MpvEventID.PLAYBACK_RESTART):
             self.mpv_event.emit(eid, -1)
 
@@ -500,9 +508,6 @@ class PlayerPage(QWidget):
 
     def __init__(self, ctx, parent=None):
         super().__init__(parent)
-        from .mirror import Mirror
-        self.mirror_msg.connect(lambda t: self.active and self._toast(t))
-        self.mirror = Mirror(on_status=self.mirror_msg.emit)
         self.ctx = ctx
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
@@ -692,6 +697,11 @@ class PlayerPage(QWidget):
         self.buffered = 0.0
         self.readahead = 600.0
         self.dragging = False
+        self.user_paused = False
+        self._log_state = None
+        self._beat_at = 0.0
+        self._last_drops = 0
+        self._stall_reset()
         self.controls_shown = True
         self.has_played = False
         self.failures = 0
@@ -797,6 +807,8 @@ class PlayerPage(QWidget):
         """Pause and shrink to the mini player along the bottom (Esc / back)."""
         if not self.active or self.mode == "mini":
             return
+        log.info(f"Minimized at {time_str(self.cur)}")
+        self.user_paused = True
         if not self._prop("pause", False):
             try:
                 self.video.mpv.pause = True
@@ -931,6 +943,7 @@ class PlayerPage(QWidget):
         self._audio_checked_until = time.monotonic() + 20
         self._embedded_subs = 0
         self.switching = False
+        self.user_paused = False
         self.dur = item.duration_ms / 1000
         resume = 0.0 if from_start else item.offset_ms / 1000
         if self.dur and resume > self.dur - 120:
@@ -946,9 +959,7 @@ class PlayerPage(QWidget):
         else:
             self._set_info(item.display_title, str(item.get("year") or ""))
         is_ep = item.type == "episode"
-        for w in (self.next_btn, self.div_r):
-            w.setVisible(is_ep)
-        self.next_btn.setEnabled(False)
+        self._show_next(False)   # shown once we know there's a next episode
         self._layout()
         self._configure_cache(item)
         try:
@@ -960,16 +971,15 @@ class PlayerPage(QWidget):
         self.poll.start()
         self.report_timer.start()
         self.device_timer.start()
-        self.apply_mirror()
         self._fetch_extras(item)
-
-    def apply_mirror(self):
-        """Second headphones on/off per Settings (only while something plays)."""
-        s = self.ctx.settings
-        if self.active and s["mirrorDevice"]:
-            self.mirror.start(s["mirrorDevice"], int(s["mirrorDelayMs"] or 0))
-        else:
-            self.mirror.stop()
+        self._stall_reset()
+        self._log_state = None
+        self._beat_at = time.monotonic() + 20
+        self._last_drops = 0
+        log.info(f"PLAY {item.display_title}" + (f" {item.episode_code} {item.title}" if is_ep else "")
+                 + f"  (key {item.key}, from {time_str(resume)}, {item.media.get('videoResolution', '?')} "
+                 f"{item.media.get('videoCodec', '?')}/{item.media.get('audioCodec', '?')}, "
+                 f"{item.media.get('bitrate', '?')} kbps, {item.part.get('container', '?')}, buffer {int(self.readahead) // 60} min)")
 
     def _fetch_extras(self, item: Item):
         """Markers, external subtitles and the next episode, fetched while the video starts."""
@@ -1010,11 +1020,18 @@ class PlayerPage(QWidget):
                                           if st.get("streamType") == 3 and not st.get("key"))
                 self._add_external_subs()
             self.next_item = nxt
-            self.next_btn.setEnabled(nxt is not None)
-            self.next_btn.setToolTip(f"Next episode: {nxt.episode_code} · {nxt.title} (Shift+N)" if nxt
-                                     else "No next episode")
+            self._show_next(nxt is not None)
+            if nxt:
+                self.next_btn.setToolTip(f"Next episode: {nxt.episode_code} · {nxt.title} (Shift+N)")
 
         run_bg(fetch, got)
+
+    def _show_next(self, on: bool):
+        """The next-episode button is only there when there is a next episode."""
+        for w in (self.next_btn, self.div_r):
+            w.setVisible(on)
+        self.next_btn.setEnabled(on)
+        self._layout()
 
     def _add_external_subs(self):
         # Wait until the video is actually playing so fetching subtitle files never delays the start.
@@ -1076,8 +1093,10 @@ class PlayerPage(QWidget):
         # Subtitles start off (like Plex), whatever the file marks as default. Plex's own choice for this
         # video is applied once its details arrive. On a reopen, keep whatever was showing.
         opts["sid"] = self._reopen_sid()
+        log.info(f"open {'local preload' if url.startswith('http://127.') else 'server'} at {time_str(at)}")
         m.loadfile(url, **opts)
         m.pause = False
+        self.user_paused = False
         self._set_play_icon(True)
 
     # ------------------------------------------------------------------ next-episode preload
@@ -1206,7 +1225,7 @@ class PlayerPage(QWidget):
         if not self.active:
             return
         self.active = False
-        self.mirror.stop()
+        log.info(f"STOP at {time_str(self.cur)}")
         for t in (self.poll, self.report_timer, self.retry_timer, self.hide_timer, self.device_timer):
             t.stop()
         item, t, d = self.item, self.cur, self.dur
@@ -1249,10 +1268,11 @@ class PlayerPage(QWidget):
                 except Exception:
                     pass
         self.active = False
-        self.mirror.stop()
+        log.info("App closing")
         self.video.shutdown()
 
     def _fatal(self, msg: str):
+        log.warn("ERROR shown: " + msg.replace("\n", " "))
         if self.mode == "mini":
             self.set_mode("full")
         self.spinner.hide()
@@ -1413,6 +1433,8 @@ class PlayerPage(QWidget):
             self.video.mpv["audio-delay"] = ms / 1000
         except Exception:
             pass
+        if changed:
+            log.info(f"Sound output changed to {name}")
         if changed and self.active:
             self._toast(f"Audio: {name}" + (f"  ·  delay {ms:+d} ms" if ms else ""))
 
@@ -1630,12 +1652,112 @@ class PlayerPage(QWidget):
             if self.failures >= 4:
                 self._fatal("This video couldn't be played.\nCheck your connection to the Plex server.")
                 return
+        log.info(f"Couldn't read the video at {time_str(self.cur)} (try {self.failures}); retrying in 3 s")
         self.reloading = True
         self.retry_timer.start(3000)
 
     def _retry(self):
         if self.active and self.item:
+            log.info(f"Reopening at {time_str(self.cur)}")
             self._open(self.cur)
+
+    # ------------------------------------------------------------------ stall watchdog
+    # Sometimes the picture just freezes: not paused, no spinner progress, and it only comes back after
+    # pausing and playing again. The watchdog does that for you: a quick pause/play nudge first, then, if
+    # it's still stuck, reopens the video at the same spot. Every step goes in the log.
+
+    STALL_WITH_DATA = 6.0      # seconds frozen with video already downloaded ahead → something's stuck
+    STALL_NO_DATA = 25.0       # seconds frozen while waiting for data (slow connection gets longer)
+
+    def _stall_reset(self):
+        self._stall_pos = None
+        self._stall_since = time.monotonic()
+        self._stall_step = 0
+        self._nudge_until = 0.0
+
+    def _watch_stall(self, t, paused, seeking, now):
+        if t is not None and (self._stall_pos is None or abs(float(t) - self._stall_pos) > 0.05):
+            if self._stall_step:
+                log.info(f"Playing again at {time_str(float(t))} (recovered)")
+            self._stall_pos = float(t)
+            self._stall_since = now
+            self._stall_step = 0
+            return
+        should_play = (self.has_played and not paused and not self.switching and not self.finishing
+                       and not self.dragging and self.item is not None)
+        if not should_play:
+            if self._stall_step and now < self._nudge_until and not self.user_paused:
+                return    # our own pause/play nudge, not you pausing
+            self._stall_since = now
+            self._stall_step = 0
+            return
+        stuck = now - self._stall_since
+        limit = self.STALL_WITH_DATA if self.buffered >= 5 else self.STALL_NO_DATA
+        if self._stall_step == 0 and stuck > limit:
+            self._stall_step = 1
+            log.warn(f"STALL: frozen at {time_str(self.cur)} for {stuck:.0f} s, not paused. {self._state_line()}"
+                     " → nudging (pause/play)")
+            m = self.video.mpv
+            self._nudge_until = now + 2
+            try:
+                m.pause = True
+                QTimer.singleShot(300, lambda: self.active and not self.user_paused and setattr(m, "pause", False))
+            except Exception as e:  # noqa: BLE001
+                log.warn(f"nudge failed: {e}")
+        elif self._stall_step == 1 and stuck > limit + 6:
+            self._stall_step = 2
+            log.warn(f"STALL: still frozen after the nudge. {self._state_line()} → reopening at {time_str(self.cur)}")
+            self.reloading = True
+            self._open(self.cur)
+        elif self._stall_step == 2 and stuck > limit + 40:
+            self._stall_step = 1     # still nothing: go round again (nudge, then reopen)
+            self._stall_since = now - limit - 1
+            log.warn("STALL: reopening didn't help yet; trying again")
+
+    # ------------------------------------------------------------------ log helpers
+
+    def _state_line(self) -> str:
+        g = self._prop
+        cache = g("demuxer-cache-state", {}) or {}
+        return (f"[pos {time_str(self.cur)} · loaded {self.buffered:.0f}s · "
+                f"dl {(g('cache-speed') or 0) * 8 / 1e6:.1f} Mbps · paused {g('pause')} · waiting-for-data {g('paused-for-cache')} · "
+                f"idle {g('core-idle')} · seeking {g('seeking')} · eof {g('eof-reached')} · cache-eof {cache.get('eof')} · "
+                f"underrun {cache.get('underrun')} · audio {g('audio-codec-name')}/{self.audio_device} · "
+                f"offline {self.offline}]")
+
+    def _frames_line(self) -> str:
+        g = self._prop
+        scr = self.screen() or QApplication.primaryScreen()
+        win = self.window()
+        return (f"[video {g('container-fps') or 0:.3f} fps · screen {scr.refreshRate() if scr else 0:.2f} Hz "
+                f"({scr.name() if scr else '?'}) · mpv display {g('display-fps') or 0:.2f} Hz · "
+                f"dropped {g('frame-drop-count') or 0} · decoder dropped {g('decoder-frame-drop-count') or 0} · "
+                f"delayed {g('vo-delayed-frame-count') or 0} · mistimed {g('mistimed-frame-count') or 0} · "
+                f"av {(g('avsync') or 0) * 1000:+.0f} ms · decoder {g('hwdec-current') or 'software'} · "
+                f"sync {g('video-sync')} · {'full screen' if win and win.isFullScreen() else 'window'} "
+                f"{self.video.width()}x{self.video.height()} · gpu {getattr(self.video, 'renderer', '') or '?'}]")
+
+    def _log_tick(self, paused, pfc, buffering, now):
+        st = (bool(paused), bool(pfc), bool(buffering), bool(self.offline), self.mode)
+        if st != self._log_state:
+            if self._log_state is not None or st[2]:
+                what = []
+                if st[0]:
+                    what.append("paused")
+                if st[1]:
+                    what.append("waiting for data")
+                elif st[2]:
+                    what.append("loading")
+                if st[3]:
+                    what.append("NO SIGNAL")
+                log.info(f"state: {', '.join(what) or 'playing'} ({self.mode}) {self._state_line()}")
+            self._log_state = st
+        if self.has_played and now >= self._beat_at:
+            self._beat_at = now + float(os.environ.get("ICE_BEAT_SECS", 60))
+            drops = int(self._prop("frame-drop-count") or 0) + int(self._prop("vo-delayed-frame-count") or 0)
+            log.info(f"status {self._state_line()} {self._frames_line()}"
+                     + (f"  ← {drops - self._last_drops} more dropped/late frames this minute" if drops - self._last_drops > 5 else ""))
+            self._last_drops = drops
 
     def _prop(self, name, default=None):
         try:
@@ -1676,6 +1798,7 @@ class PlayerPage(QWidget):
         self._last_progress = progress
         self.offline = (now - self.last_data) > 6
 
+        self._watch_stall(t, paused, seeking, now)
         playing_now = t is not None and not paused and not idle and not pfc
         # Keep the screen on (no screen saver / display sleep) while a video plays; let it sleep when paused.
         self._keep_awake(not paused)
@@ -1684,6 +1807,7 @@ class PlayerPage(QWidget):
         if playing_now and not seeking:
             if not self.has_played:
                 self.has_played = True
+                log.info(f"Started playing at {time_str(self.cur)} {self._frames_line()}")
                 self._add_external_subs()
             self.failures = 0
 
@@ -1693,6 +1817,7 @@ class PlayerPage(QWidget):
         if buffering:
             self.spinner.raise_()
         self.buffering = buffering
+        self._log_tick(paused, pfc, buffering, now)
 
         if self.offline and buffering:
             self.status.setText("No signal — will pick up where it left off")
@@ -1771,6 +1896,8 @@ class PlayerPage(QWidget):
             return
         m = self.video.mpv
         m.pause = not m.pause
+        self.user_paused = bool(m.pause)
+        log.info(f"You {'paused' if m.pause else 'pressed play'} at {time_str(self.cur)}")
         self._set_play_icon(not m.pause)
         self._report()
         self.show_controls()
@@ -1782,6 +1909,7 @@ class PlayerPage(QWidget):
         if not self.active or not self.item:
             return
         t = max(0.0, min(t, self.dur - 2 if self.dur else t))
+        log.info(f"Seek {time_str(self.cur)} → {time_str(t)}")
         self.cur = t
         try:
             self.video.mpv.command("seek", f"{t:.3f}", "absolute+exact")

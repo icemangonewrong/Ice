@@ -729,7 +729,7 @@ class SettingsPage(ScrollPage):
         self.body.addLayout(row)
 
         from . import mirror
-        if mirror.available():
+        if False and mirror.available():   # second headphones: switched off for now (didn't work right)
             self.section("Second headphones", "Also play the sound on a second Bluetooth headset, so two people can "
                          "listen (for example two pairs of AirPods). Connect both to Windows first. Ice copies the sound "
                          "to the second pair while a video plays.")
@@ -807,6 +807,14 @@ class SettingsPage(ScrollPage):
         out = button("Sign out")
         out.clicked.connect(self.ctx.sign_out)
         self.body.addWidget(out, 0, Qt.AlignLeft)
+
+        from . import log
+        self.section("Log file", "Ice keeps a log of what the player does: freezes, connection drops, dropped frames, "
+                                 "sound output changes. If something goes wrong, open the folder and send ice.log.")
+        self.body.addWidget(label(str(log.log_file()), "Muted", wrap=True))
+        lb = button("Open log folder")
+        lb.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(log.log_dir()))))
+        self.body.addWidget(lb, 0, Qt.AlignLeft)
 
         from .version import BUILD
         self.section("About")
