@@ -30,6 +30,7 @@ RETRY_AFTER = 3600           # after a failed download
 
 _ids = array.array("I")
 _vals = array.array("B")
+_votes = array.array("I")      # number of IMDb votes: IMDb's own measure of how popular a title is
 _lock = threading.Lock()
 _started = False
 _listeners: list[Callable[[], None]] = []
@@ -38,7 +39,7 @@ _listeners: list[Callable[[], None]] = []
 def _paths():
     d = cache_dir() / "imdb"
     d.mkdir(parents=True, exist_ok=True)
-    return d / "ids.bin", d / "ratings.bin", d / "stamp"
+    return d / "ids.bin", d / "ratings.bin", d / "stamp", d / "votes.bin"
 
 
 def _id_num(imdb_id) -> Optional[int]:
@@ -55,6 +56,18 @@ def rating(imdb_id) -> Optional[float]:
     i = bisect.bisect_left(ids, n)
     if i < len(ids) and ids[i] == n:
         return vals[i] / 10
+    return None
+
+
+def votes(imdb_id) -> Optional[int]:
+    """How many people rated tt1234567 on IMDb, or None."""
+    n = _id_num(imdb_id)
+    if n is None:
+        return None
+    ids, vts = _ids, _votes
+    i = bisect.bisect_left(ids, n)
+    if i < len(ids) and ids[i] == n and i < len(vts):
+        return vts[i]
     return None
 
 
@@ -76,29 +89,36 @@ def _notify():
 
 
 def _load_saved() -> bool:
-    global _ids, _vals
-    ip, vp, _ = _paths()
+    global _ids, _vals, _votes
+    ip, vp, _, cp = _paths()
     try:
-        ids, vals = array.array("I"), array.array("B")
+        ids, vals, vts = array.array("I"), array.array("B"), array.array("I")
         with open(ip, "rb") as f:
             ids.frombytes(f.read())
         with open(vp, "rb") as f:
             vals.frombytes(f.read())
         if len(ids) != len(vals) or not ids:
             return False
+        try:
+            with open(cp, "rb") as f:
+                vts.frombytes(f.read())
+        except OSError:
+            pass
+        if len(vts) != len(ids):
+            vts = array.array("I")
         with _lock:
-            _ids, _vals = ids, vals
+            _ids, _vals, _votes = ids, vals, vts
         return True
     except OSError:
         return False
 
 
 def _download():
-    global _ids, _vals
-    ip, vp, sp = _paths()
+    global _ids, _vals, _votes
+    ip, vp, sp, cp = _paths()
     r = requests.get(URL, timeout=(15, 120), headers={"User-Agent": "Ice"})
     r.raise_for_status()
-    ids, vals = array.array("I"), array.array("B")
+    ids, vals, vts = array.array("I"), array.array("B"), array.array("I")
     in_order, last = True, -1
     with gzip.open(io.BytesIO(r.content), "rt", encoding="utf-8", newline="") as f:
         next(f, None)   # header: tconst  averageRating  numVotes
@@ -109,6 +129,7 @@ def _download():
             try:
                 n = int(p[0][2:])
                 v = int(round(float(p[1]) * 10))
+                c = int(p[2]) if len(p) > 2 else 0
             except ValueError:
                 continue
             if n <= last:
@@ -116,20 +137,22 @@ def _download():
             last = n
             ids.append(n)
             vals.append(max(0, min(v, 100)))
+            vts.append(max(0, min(c, 4_000_000_000)))
     if not ids:
         raise IOError("empty ratings file")
     if not in_order:   # IMDb's file is sorted already; just in case it ever isn't
         order = sorted(range(len(ids)), key=ids.__getitem__)
         ids = array.array("I", (ids[i] for i in order))
         vals = array.array("B", (vals[i] for i in order))
-    for path, arr in ((ip, ids), (vp, vals)):
+        vts = array.array("I", (vts[i] for i in order))
+    for path, arr in ((ip, ids), (vp, vals), (cp, vts)):
         tmp = str(path) + ".tmp"
         with open(tmp, "wb") as f:
             f.write(arr.tobytes())
         os.replace(tmp, path)
     sp.write_text(str(time.time()))
     with _lock:
-        _ids, _vals = ids, vals
+        _ids, _vals, _votes = ids, vals, vts
 
 
 def _age() -> float:
@@ -144,7 +167,7 @@ def _worker():
         _notify()
     while True:
         age = _age()
-        if age >= MAX_AGE or not loaded():
+        if age >= MAX_AGE or not loaded() or len(_votes) != len(_ids):
             try:
                 _download()
                 _notify()

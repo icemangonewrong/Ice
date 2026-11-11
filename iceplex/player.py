@@ -910,8 +910,11 @@ class PlayerPage(QWidget):
                 target = client.next_episode(target.key)
                 if not target:
                     raise Exception("No episodes found.")
-            if not target.part.get("key"):
+            # Always the latest details: the list this came from may be minutes old, and its resume point with it.
+            try:
                 target = client.metadata(target.key) or target
+            except Exception as e:  # noqa: BLE001
+                print("fresh details failed, using the list's:", e)
             return target
 
         run_bg(prepare, lambda t: self._load(t, from_start), lambda e: self._fatal(str(e)))
@@ -1577,7 +1580,8 @@ class PlayerPage(QWidget):
         if direction == 0:
             new = 1.0
         elif direction > 0:
-            new = next((z for z in levels if z > cur + 0.005), levels[-1])
+            # Past the last step: back to the original size.
+            new = next((z for z in levels if z > cur + 0.005), 1.0)
         else:
             new = next((z for z in reversed(levels) if z < cur - 0.005), 1.0)
         self.zoom_scale = new
@@ -1588,16 +1592,6 @@ class PlayerPage(QWidget):
             self.video.mpv["video-pan-y"] = 0
         except Exception:
             pass
-        if new <= 1.0:
-            self._toast("Original size", 1500)
-        elif abs(new - levels[3]) < 0.005:
-            self._toast("Zoom 3 of 3 · fill screen", 1500)
-        elif abs(new - levels[1]) < 0.005:
-            self._toast("Zoom 1 of 3", 1500)
-        elif abs(new - levels[2]) < 0.005:
-            self._toast("Zoom 2 of 3", 1500)
-        else:
-            self._toast(f"Zoom {new:.1f}×", 1500)
 
     def _reset_zoom_silently(self):
         self.zoom_scale = 1.0

@@ -379,7 +379,9 @@ class LibraryGridPage(ScrollPage):
         self.SORTS = [("Title", "titleSort"), ("Recently added", "addedAt:desc")]
         if section.get("type") == "show":
             self.SORTS.insert(1, ("Newest episode", "episode.addedAt:desc"))
-        self.SORTS += [("Release date", "originallyAvailableAt:desc"), ("Recently watched", "lastViewedAt:desc")]
+        self.SORTS += [("Release date", "originallyAvailableAt:desc"), ("Recently watched", "lastViewedAt:desc"),
+                       ("IMDb rating", "imdb"), ("Popular (IMDb votes)", "popular")]
+        self._sorted: Optional[list] = None    # IMDb sorts: the whole library, sorted here (Plex can't)
         self.title = section["title"]
         self.body.setContentsMargins(32, 76, 32, 40)   # room for the back button
         self.body.setSpacing(20)
@@ -419,6 +421,7 @@ class LibraryGridPage(ScrollPage):
             if it.widget():
                 it.widget().deleteLater()
         self.items, self.total, self.loading = [], None, False
+        self._sorted = None
         self.load_more()
 
     def refresh(self):
@@ -440,6 +443,34 @@ class LibraryGridPage(ScrollPage):
         unwatched = self.unwatched.isChecked()
         start = len(self.items)
         key = self.section["key"]
+        if sort in ("imdb", "popular"):
+            if self._sorted is not None:
+                page = self._sorted[start:start + self.PAGE]
+                QTimer.singleShot(0, lambda: self._got(gen, page, len(self._sorted)))
+                return
+            client = self.ctx.client
+
+            def fetch_all():
+                from . import imdb
+                everything = []
+                while True:
+                    got, total = client.items(key, "titleSort", unwatched, len(everything), 300)
+                    everything += got
+                    if len(got) < 300 or (total is not None and len(everything) >= total):
+                        break
+                if sort == "imdb":
+                    rank = lambda it: it.imdb_rating or -1  # noqa: E731
+                else:
+                    rank = lambda it: imdb.votes(it.imdb_id) or -1  # noqa: E731
+                return sorted(everything, key=rank, reverse=True)
+
+            def got_all(everything):
+                if gen != self._gen:
+                    return
+                self._sorted = everything
+                self._got(gen, everything[:self.PAGE], len(everything))
+            run_bg(fetch_all, got_all, lambda e: self._got(gen, [], len(self.items)))
+            return
         run_bg(lambda: self.ctx.client.items(key, sort, unwatched, start, self.PAGE),
                lambda r: self._got(gen, *r), lambda e: self._got(gen, [], len(self.items)))
 
