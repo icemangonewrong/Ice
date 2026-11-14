@@ -1437,10 +1437,36 @@ class PlayerPage(QWidget):
             self.video.mpv["audio-delay"] = ms / 1000
         except Exception:
             pass
+        self._apply_audio_buffer(name)
         if changed:
             log.info(f"Sound output changed to {name}")
         if changed and self.active:
             self._toast(f"Audio: {name}" + (f"  ·  delay {ms:+d} ms" if ms else ""))
+
+    # Bluetooth headphones (AirPods etc.) sometimes stall for a moment. With only the default 0.2 s of sound
+    # queued they run dry ("Audio device underrun" in the log) and the picture skips frames to catch up. Keeping
+    # 0.6 s queued for Bluetooth covers those stalls. Lip sync is unaffected (the player accounts for the buffer);
+    # pause and volume just respond a touch later.
+    BT_WORDS = ("airpods", "bluetooth", "buds", "beats", "bose", "jabra", "hands-free", "wh-1000", "wf-1000")
+
+    @classmethod
+    def _is_bluetooth(cls, name: str) -> bool:
+        n = (name or "").lower()
+        return any(w in n for w in cls.BT_WORDS) or n.endswith(" stereo)")
+
+    def _apply_audio_buffer(self, name: str):
+        want = 0.6 if self._is_bluetooth(name) else 0.2
+        if abs(getattr(self, "_audio_buffer", 0.2) - want) < 0.01:
+            return
+        self._audio_buffer = want
+        try:
+            m = self.video.mpv
+            m["audio-buffer"] = want
+            if self.active:
+                m.command("ao-reload")
+            log.info(f"Sound buffer {want:.1f} s for {name} ({'Bluetooth' if want > 0.2 else 'not Bluetooth'})")
+        except Exception as e:  # noqa: BLE001
+            log.warn(f"couldn't set the sound buffer: {e}")
 
     def _check_audio_device(self):
         if self.active:
