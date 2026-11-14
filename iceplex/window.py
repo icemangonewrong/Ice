@@ -14,7 +14,7 @@ from . import theme
 from .config import Settings
 from .pages import (HomePage, LibrariesPage, SearchPage, ServerPage, SettingsPage, SignInPage, detail_page,
                     resource_path)
-from .player import MINI_H, PlayerPage
+from .player import MINI_H, NATIVE_VIDEO, PlayerPage
 from .plex import Item, PlexClient
 from .widgets import label
 
@@ -133,7 +133,9 @@ class MainWindow(QMainWindow):
         # OpenGL window into an exclusive mode and the screen blacks out for a moment on entering/leaving full
         # screen and whenever a menu opens over the video. This is Qt's own switch for it, so Qt still knows the
         # window is full screen (setting the border behind Qt's back made it lose track and get stuck).
-        if sys.platform == "win32":
+        # (Only needed for the old in-window OpenGL video; with mpv's own video window it would just show as
+        # a thin white frame around the screen.)
+        if sys.platform == "win32" and not NATIVE_VIDEO:
             self.setAttribute(Qt.WA_NativeWindow)
             wh = self.windowHandle()
             if wh is not None:
