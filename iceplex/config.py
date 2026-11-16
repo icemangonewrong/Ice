@@ -50,6 +50,7 @@ class Settings:
         "server": None,
         "excludedSections": [],
         "bufferMinutes": 2,
+        "videoStoreGB": 10,        # downloaded video kept on disk until watched (0 = off)
         "volume": 100,
         "tapToPause": False,
         "accent": "#ff8c00",

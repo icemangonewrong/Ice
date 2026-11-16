@@ -66,6 +66,8 @@ class Preload:
         """Nothing preloaded: just passes the video through from the server, and if the connection drops
         it keeps retrying in the background (every 10 s) and carries on from the exact byte where it stopped."""
         p = cls(key, url, size, None)
+        from . import vstore
+        p.store = vstore.get(key, size) if vstore.enabled() else None
         p.plan = []
         p.head_want = 0
         p.done = True
@@ -204,7 +206,16 @@ class _Handler(BaseHTTPRequestHandler):
     def _send_range(self, p: Preload, a: int, b: int):
         pos = a
         upstream = None
+        st = getattr(p, "store", None)
+        writer = st.writer() if st else None
         while pos <= b:
+            if st and st.has(pos):
+                # Saved on disk from an earlier time: no download needed.
+                data = st.read(pos, b + 1)
+                if data:
+                    self.wfile.write(data)
+                    pos += len(data)
+                    continue
             part = p.part_at(pos)
             if part:
                 st, buf = part
@@ -218,6 +229,8 @@ class _Handler(BaseHTTPRequestHandler):
                 pos = end
                 continue
             nxt = p.next_start(pos)
+            saved = st.next_saved(pos) if st else None
+            nxt = min(x for x in (nxt, saved) if x) if (nxt or saved) else None
             up_end = min(b, nxt - 1) if nxt else b
             try:
                 if upstream and upstream.start == pos:
@@ -230,6 +243,8 @@ class _Handler(BaseHTTPRequestHandler):
                 with r:
                     for chunk in r.iter_content(CHUNK):
                         take = chunk[:up_end + 1 - pos]
+                        if writer:
+                            writer.feed(pos, take)
                         self.wfile.write(take)
                         pos += len(take)
                         if pos > up_end:
@@ -326,6 +341,9 @@ def _ensure_server() -> ThreadingHTTPServer:
 
 def register(p: Preload) -> str:
     srv = _ensure_server()
+    from . import vstore
+    if getattr(p, "store", None) is None and vstore.enabled() and p.size:
+        p.store = vstore.get(p.key, p.size)
     with _lock:
         _preloads[p.token] = p
     return f"http://127.0.0.1:{srv.server_address[1]}/ice/{p.token}"

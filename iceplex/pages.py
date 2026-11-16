@@ -736,6 +736,42 @@ class SettingsPage(ScrollPage):
         row.addStretch()
         self.body.addLayout(row)
 
+        from . import vstore
+        self.section("Keep downloaded video", "Whatever's been downloaded stays on this PC until you've watched it, "
+                                              "so closing and reopening a video (even after restarting Ice) doesn't "
+                                              "download it again. Over the limit, the videos played longest ago are "
+                                              "deleted first.")
+        store = NoWheelCombo()
+        for gb in (0, 2, 5, 10, 20, 50):
+            store.addItem("Off" if gb == 0 else f"Up to {gb} GB", gb)
+        cur = s["videoStoreGB"]
+        store.setCurrentIndex(max(0, store.findData(cur)))
+        used = label("", "Muted")
+
+        def show_used():
+            used.setText(f"Using {vstore.usage_gb():.1f} GB now")
+
+        def set_store(i):
+            gb = store.itemData(i)
+            self.ctx.settings["videoStoreGB"] = gb
+            vstore.set_limit(gb)
+            if gb == 0:
+                vstore.clear()
+            QTimer.singleShot(1500, show_used)
+        store.currentIndexChanged.connect(set_store)
+        clear = button("Delete saved video")
+        clear.clicked.connect(lambda: (vstore.clear(), show_used()))
+        row = QHBoxLayout()
+        row.addWidget(label("Keep"))
+        row.addSpacing(12)
+        row.addWidget(store)
+        row.addSpacing(12)
+        row.addWidget(clear)
+        row.addStretch()
+        self.body.addLayout(row)
+        show_used()
+        self.body.addWidget(used)
+
         self.section("Player")
         tap = QCheckBox("Pause when the video is clicked")
         tap.setChecked(bool(s["tapToPause"]))

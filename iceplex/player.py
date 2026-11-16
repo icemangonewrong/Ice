@@ -20,7 +20,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QMenu, QSlider, QToolButton, QVBoxLayout, QWidget, QPushButton)
 
-from . import audiodev, log, prefetch, theme
+from . import audiodev, log, prefetch, theme, vstore
 from .config import cache_dir
 from .plex import Item
 from .util import run_bg, time_str
@@ -974,6 +974,7 @@ class PlayerPage(QWidget):
         self.poll.start()
         self.report_timer.start()
         self.device_timer.start()
+        vstore.opened(item.key)
         self._fetch_extras(item)
         self._stall_reset()
         self._log_state = None
@@ -1260,6 +1261,8 @@ class PlayerPage(QWidget):
         self.preload = None
         self._preload_extras = None
         prefetch.keep_only(set())
+        if item:
+            vstore.closed(item.key)
         self.spinner.hide()
         self.up_next.hide()
         self.skip_btn.hide()
@@ -1274,7 +1277,7 @@ class PlayerPage(QWidget):
             def report():
                 client.report_timeline(item, "stopped", int(t * 1000), int(d * 1000))
                 if d and t / d > 0.9:
-                    client.mark_watched(item.key)
+                    client.mark_watched(item.key); vstore.drop(item.key)
             run_bg(report, lambda _: self.ctx.data_changed.emit())
         self.closed.emit()
 
@@ -1341,7 +1344,7 @@ class PlayerPage(QWidget):
         def report():
             if mark_current_watched:
                 client.report_timeline(item, "stopped", int(d * 1000), int(d * 1000))
-                client.mark_watched(item.key)
+                client.mark_watched(item.key); vstore.drop(item.key)
             else:
                 client.report_timeline(item, "stopped", int(t * 1000), int(d * 1000))
         if item:
@@ -1889,7 +1892,7 @@ class PlayerPage(QWidget):
 
         def wrap_up():
             client.report_timeline(item, "stopped", int(d * 1000), int(d * 1000))
-            client.mark_watched(item.key)
+            client.mark_watched(item.key); vstore.drop(item.key)
             if go_next is None and not self.up_next_cancelled:
                 return client.episode_after(item)
             return go_next

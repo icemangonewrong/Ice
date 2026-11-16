@@ -27,6 +27,8 @@ class Context(QObject):
         super().__init__()
         self.window = window
         self.settings = Settings()
+        from . import vstore
+        vstore.set_limit(self.settings["videoStoreGB"] or 0)
         self.client = PlexClient(self.settings["clientIdentifier"])
         self.client.token = self.settings["token"]
         self.client.server = self.settings["server"]
