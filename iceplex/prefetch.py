@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import re
 import secrets
+import select
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
@@ -22,6 +25,7 @@ HEAD_MIN = 4_000_000
 HEAD_MAX = 80_000_000      # cap (very high bitrate files get fewer seconds)
 TAIL_BYTES = 4_000_000
 CHUNK = 256 * 1024
+RETRY_WAITS = [2, 5, 10]   # then every 10 s, for as long as the video is open
 
 
 class Preload:
@@ -56,6 +60,16 @@ class Preload:
 
     def start(self):
         self._thread.start()
+
+    @classmethod
+    def relay(cls, key: str, url: str, size: int) -> "Preload":
+        """Nothing preloaded: just passes the video through from the server, and if the connection drops
+        it keeps retrying in the background (every 10 s) and carries on from the exact byte where it stopped."""
+        p = cls(key, url, size, None)
+        p.plan = []
+        p.head_want = 0
+        p.done = True
+        return p
 
     def cancel(self):
         self.cancelled.set()
@@ -205,28 +219,66 @@ class _Handler(BaseHTTPRequestHandler):
                 continue
             nxt = p.next_start(pos)
             up_end = min(b, nxt - 1) if nxt else b
-            if upstream and upstream.start == pos:
-                r = upstream.get()
-            else:
-                if upstream:
-                    upstream.close()
-                r = _open(p.url, pos, up_end)
-            upstream = self._up = None
-            with r:
-                for chunk in r.iter_content(CHUNK):
-                    take = chunk[:up_end + 1 - pos]
-                    self.wfile.write(take)
-                    pos += len(take)
-                    if pos > up_end:
-                        break
+            try:
+                if upstream and upstream.start == pos:
+                    r = upstream.get()
+                else:
+                    if upstream:
+                        upstream.close()
+                    r = _open(p.url, pos, up_end)
+                upstream = self._up = None
+                with r:
+                    for chunk in r.iter_content(CHUNK):
+                        take = chunk[:up_end + 1 - pos]
+                        self.wfile.write(take)
+                        pos += len(take)
+                        if pos > up_end:
+                            break
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                raise          # the player hung up (seek, stop): nothing to do
+            except Exception as e:  # noqa: BLE001  (lost the server: retry below)
+                upstream = self._up = None
+                print(f"relay: lost the server at byte {pos}: {type(e).__name__}")
             if pos <= up_end:
-                print(f"preload serve: server cut off at byte {pos}")
-                return False   # mpv reconnects for the rest
+                # Connection to the server dropped (dead zone, hotspot lost service...). Keep the player's
+                # connection open and keep trying the server in the background until it answers, then carry
+                # on from this exact byte. The player keeps playing what it already has meanwhile.
+                if not self._wait_for_server(p, pos):
+                    return False
         return True
+
+    def _player_gone(self) -> bool:
+        try:
+            r, _, _ = select.select([self.connection], [], [], 0)
+            return bool(r) and self.connection.recv(1, socket.MSG_PEEK) == b""
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _wait_for_server(self, p: Preload, pos: int) -> bool:
+        """Retry until the server answers. False if the video was closed or the player hung up first."""
+        t0, n = time.monotonic(), 0
+        while True:
+            wait = RETRY_WAITS[min(n, len(RETRY_WAITS) - 1)]
+            n += 1
+            end = time.monotonic() + wait
+            while time.monotonic() < end:
+                if not alive(p) or self._player_gone():
+                    print("relay: stopped retrying (video closed)")
+                    return False
+                time.sleep(0.5)
+            try:
+                r = _open(p.url, pos, pos)
+                r.close()
+                print(f"relay: server back after {time.monotonic() - t0:.0f} s ({n} tries); continuing from byte {pos}")
+                return True
+            except Exception as e:  # noqa: BLE001
+                if n == 1 or n % 6 == 0:
+                    print(f"relay: server still unreachable after {time.monotonic() - t0:.0f} s ({type(e).__name__}); "
+                          f"trying every {RETRY_WAITS[-1]} s")
 
 
 def _open(url, start, end):
-    r = requests.get(url, headers={"Range": f"bytes={start}-{end}"}, stream=True, timeout=(10, 30))
+    r = requests.get(url, headers={"Range": f"bytes={start}-{end}"}, stream=True, timeout=(10, 15))
     if r.status_code not in (200, 206):
         r.close()
         raise IOError(f"server returned {r.status_code}")
@@ -286,6 +338,18 @@ def keep_only(keys: set[str]):
             if p.key not in keys:
                 p.cancel()
                 del _preloads[t]
+
+
+def alive(p: Preload) -> bool:
+    with _lock:
+        return _preloads.get(p.token) is p
+
+
+def forget(p: Preload):
+    with _lock:
+        if _preloads.get(p.token) is p:
+            del _preloads[p.token]
+    p.cancel()
 
 
 def find(key: str) -> Optional[Preload]:

@@ -1088,16 +1088,32 @@ class PlayerPage(QWidget):
             p = prefetch.find(self.item.key)    # warmed up from its info page
             if p:
                 self.preload = p
+        local = None
         if not direct and p and p.key == self.item.key and p.head_len() > 0 and p.size:
             local = prefetch.url_for(p)
             if local:
-                url = local
                 p.cancel()   # use what's there; the rest streams from the server
+        size = self.item.part.get("size")
+        if not local and url and size:
+            # Nothing preloaded (or reopening): still go through the local relay, which keeps retrying the
+            # server every 10 s when the connection drops and carries on downloading from where it stopped.
+            old = getattr(self, "_relay", None)
+            if old:
+                prefetch.forget(old)
+            r = prefetch.Preload.relay(self.item.key, url, int(size))
+            prefetch.register(r)
+            self._relay = r
+            local = prefetch.url_for(r)
+        if local:
+            url = local
         opts = {"start": f"{at:.3f}"} if at > 1 else {}
+        if url.startswith("http://127."):
+            # The relay is on this PC and does the retrying itself: never give up waiting on it.
+            opts["network-timeout"] = "0"
         # Subtitles start off (like Plex), whatever the file marks as default. Plex's own choice for this
         # video is applied once its details arrive. On a reopen, keep whatever was showing.
         opts["sid"] = self._reopen_sid()
-        log.info(f"open {'local preload' if url.startswith('http://127.') else 'server'} at {time_str(at)}")
+        log.info(f"open {'local preload' if p and url == prefetch.url_for(p) else 'relay' if url.startswith('http://127.') else 'server'} at {time_str(at)}")
         m.loadfile(url, **opts)
         m.pause = False
         self.user_paused = False
@@ -1649,7 +1665,7 @@ class PlayerPage(QWidget):
 
     RETRY_WAITS = [3, 5, 10, 20, 30]
     FROZEN_WITH_DATA = 8.0     # not paused, video downloaded ahead, yet the picture doesn't move
-    NO_DATA = 12.0             # waiting for video and nothing has arrived for this long
+    NO_DATA = 45.0             # waiting for video and nothing has arrived for this long (the relay retries meanwhile)
     SLOW_LIMIT = 90.0          # waiting for video this long even though bits trickle in
 
     def _schedule_retry(self, why: str = "couldn't read the video"):
