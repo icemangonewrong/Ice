@@ -26,6 +26,9 @@ HEAD_MAX = 80_000_000      # cap (very high bitrate files get fewer seconds)
 TAIL_BYTES = 4_000_000
 CHUNK = 256 * 1024
 RETRY_WAITS = [2, 5, 10]   # then every 10 s, for as long as the video is open
+# Set by the player: given the video's server URL, returns the same video on another of the server's
+# addresses that answers right now (or None). Used when the current address goes dead (VPN down).
+rebase = None
 
 
 class Preload:
@@ -281,6 +284,14 @@ class _Handler(BaseHTTPRequestHandler):
                     print("relay: stopped retrying (video closed)")
                     return False
                 time.sleep(0.5)
+            if n >= 2 and rebase:
+                try:
+                    alt = rebase(p.url)
+                except Exception:  # noqa: BLE001
+                    alt = None
+                if alt and alt != p.url:
+                    p.url = alt
+                    print("relay: switched to another server address that answers")
             try:
                 r = _open(p.url, pos, pos)
                 r.close()

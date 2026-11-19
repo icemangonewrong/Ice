@@ -302,13 +302,39 @@ class PlexClient:
         return [s for s in r.json() if "server" in (s.get("provides") or "")]
 
     def _first_reachable(self, uris: list[str], token: str) -> Optional[str]:
-        for uri in uris:
+        """Asks all the addresses at once (4 s each) and returns the first in preference order that answered,
+        so a dead address (e.g. the VPN tunnel being down) costs seconds, not 15 s per address in turn."""
+        if not uris:
+            return None
+        from concurrent.futures import ThreadPoolExecutor
+
+        def probe(uri):
             try:
-                self._req("GET", uri + "/identity", token=token, timeout=5)
-                return uri
+                self._req("GET", uri + "/identity", token=token, timeout=(4, 6))
+                return True
             except Exception:
-                continue
-        return None
+                return False
+        with ThreadPoolExecutor(max_workers=len(uris)) as ex:
+            ok = list(ex.map(probe, uris))
+        return next((u for u, good in zip(uris, ok) if good), None)
+
+    def reachable_base(self) -> Optional[str]:
+        """The server address that answers right now (switching to it if it isn't the current one)."""
+        s = self.server
+        if not s:
+            return None
+        uris = s.get("allURIs") or [s["baseURL"]]
+        working = self._first_reachable(uris, s["accessToken"])
+        if working and working != s["baseURL"]:
+            self._switch(working)
+        return working
+
+    def _switch(self, working: str):
+        s = dict(self.server, baseURL=working)
+        self.server = s
+        print(f"SERVER ADDRESS changed (the old one stopped answering): now {self.address_line()}")
+        if self.on_server_changed:
+            self.on_server_changed(s)
 
     def connect(self, resource: dict) -> dict:
         token = resource.get("accessToken") or self.token or ""
@@ -345,36 +371,39 @@ class PlexClient:
 
     # -- server requests (fail over between addresses) -------------------------
 
-    def get(self, path: str, params=None, timeout=15) -> dict:
-        params = dict(params or {})
-        params.setdefault("includeGuids", 1)   # IMDb IDs, for the IMDb ratings
+    def _server_req(self, method: str, path: str, params=None, timeout=15):
+        """A request to the server. Can't connect (address dead, e.g. VPN down): switch to an address that
+        answers and send it there. Connected but slow: wait for it, no switching (the server is just busy)."""
         s = self.server
         if not s:
             raise PlexError("No Plex server selected.")
         try:
-            return self._req("GET", s["baseURL"] + path, token=s["accessToken"],
-                             params=params, timeout=timeout).json()
-        except requests.RequestException:
+            return self._req(method, s["baseURL"] + path, token=s["accessToken"], params=params,
+                             timeout=(4, timeout))
+        except (requests.ConnectionError, requests.ConnectTimeout):
             others = [u for u in s.get("allURIs", []) if u != s["baseURL"]]
             working = self._first_reachable(others, s["accessToken"])
             if not working:
                 raise
-            s = dict(s, baseURL=working)
-            self.server = s
-            print(f"SERVER ADDRESS changed (the old one stopped answering): now {self.address_line()}")
-            if self.on_server_changed:
-                self.on_server_changed(s)
-            return self._req("GET", working + path, token=s["accessToken"],
-                             params=params, timeout=timeout).json()
+            self._switch(working)
+            return self._req(method, working + path, token=s["accessToken"], params=params, timeout=(4, timeout))
+        except requests.ReadTimeout:
+            print(f"server slow to answer {path.split('?')[0]} (over {timeout} s); asking once more")
+            return self._req(method, s["baseURL"] + path, token=s["accessToken"], params=params,
+                             timeout=(4, timeout * 2))
+
+    def get(self, path: str, params=None, timeout=15) -> dict:
+        params = dict(params or {})
+        params.setdefault("includeGuids", 1)   # IMDb IDs, for the IMDb ratings
+        return self._server_req("GET", path, params, timeout).json()
 
     def _fire(self, path: str, params=None):
-        """Fire-and-forget request (progress reports etc.)."""
+        """Progress reports, watched/unwatched: retried on a working address, so they aren't lost when one
+        address is down (that kept Continue Watching on the server out of date)."""
         try:
-            s = self.server
-            if s:
-                self._req("GET", s["baseURL"] + path, token=s["accessToken"], params=params, timeout=10)
-        except Exception:
-            pass
+            self._server_req("GET", path, params, 10)
+        except Exception as e:  # noqa: BLE001
+            print(f"couldn't tell the server {path} ({type(e).__name__})")
 
     @staticmethod
     def _items(data: dict) -> list[Item]:

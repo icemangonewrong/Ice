@@ -975,6 +975,7 @@ class PlayerPage(QWidget):
         self.report_timer.start()
         self.device_timer.start()
         vstore.opened(item.key)
+        prefetch.rebase = self._rebase_url
         self._fetch_extras(item)
         self._stall_reset()
         self._log_state = None
@@ -1671,6 +1672,18 @@ class PlayerPage(QWidget):
     NO_DATA = 45.0             # waiting for video and nothing has arrived for this long (the relay retries meanwhile)
     SLOW_LIMIT = 90.0          # waiting for video this long even though bits trickle in
 
+    def _rebase_url(self, old: str) -> Optional[str]:
+        """The relay lost the server: the same video on whichever server address answers now."""
+        c = self.ctx.client
+        s = c.server
+        if not s:
+            return None
+        cur = next((u for u in (s.get("allURIs") or []) + [s["baseURL"]] if old.startswith(u)), None)
+        base = c.reachable_base()
+        if not cur or not base or base == cur:
+            return None
+        return base + old[len(cur):]
+
     def _schedule_retry(self, why: str = "couldn't read the video"):
         """Reopen at the current spot after a short wait (longer each time it fails)."""
         if self.retry_timer.isActive():
@@ -2094,7 +2107,7 @@ class PlayerPage(QWidget):
             cur = self.video.mpv["sid"]
         except Exception:
             cur = None
-        if isinstance(cur, int) and cur <= getattr(self, "_embedded_subs", 0):
+        if isinstance(cur, int) and not isinstance(cur, bool) and cur <= getattr(self, "_embedded_subs", 0):
             return str(cur)
         return "no"
 

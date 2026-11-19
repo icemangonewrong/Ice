@@ -82,13 +82,22 @@ class Seerr:
         self.cookie = m.group(0)
         self._signed_in = True
 
+    _down_until = 0.0     # Seerr unreachable: don't try again until then
+
     def _send(self, method, url, **kw):
-        """One request, tried again a couple of times over a few seconds if the connection fails."""
+        """One request, tried again a couple of times over a few seconds if the connection fails. If Seerr
+        can't be reached at all (VPN down), stop trying for a minute: dozens of waiting requests (one per
+        poster) otherwise tie up the app's workers and everything else (Plex) waits behind them."""
+        if time.monotonic() < Seerr._down_until:
+            raise requests.ConnectionError("Seerr unreachable (trying again shortly)")
+        kw["timeout"] = (4, kw.get("timeout", 20))
         for wait in RETRY_WAITS + (None,):
             try:
                 return self.s.request(method, url, **kw)
             except (requests.ConnectionError, requests.Timeout):
                 if wait is None:
+                    Seerr._down_until = time.monotonic() + 60
+                    print(f"Seerr at {self.base} not answering; pausing Seerr requests for 60 s")
                     raise
                 time.sleep(wait)
 
