@@ -409,7 +409,9 @@ class Seerr:
 
     def season_episodes(self, tmdb_id: int, season: int) -> list[dict]:
         d = self._call("GET", f"/tv/{tmdb_id}/season/{season}")
-        return [{"number": e.get("episodeNumber"), "name": e.get("name") or "", "air_date": e.get("airDate") or ""}
+        return [{"number": e.get("episodeNumber"), "name": e.get("name") or "", "air_date": e.get("airDate") or "",
+                 "overview": e.get("overview") or "",
+                 "still": ("https://image.tmdb.org/t/p/w780" + e["stillPath"]) if e.get("stillPath") else None}
                 for e in d.get("episodes") or [] if e.get("episodeNumber") is not None]
 
     # -- people ---------------------------------------------------------------------

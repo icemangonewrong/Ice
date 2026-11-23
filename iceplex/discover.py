@@ -989,21 +989,45 @@ class TitlePage(ScrollPage):
             box = QWidget()
             v = QVBoxLayout(box)
             v.setContentsMargins(32, 0, 32, 0)
-            v.setSpacing(4)
-            flow = []
+            v.setSpacing(8)
+            # Each season: the box picks it for a request; clicking the rest opens its episodes (number, name,
+            # air date, summary, picture), like Seerr.
             for s in info["seasons"]:
                 stx = s["status"]
-                cb = QCheckBox(f"{s['name']}  ·  {s['episodes']} ep"
-                               + (f"  ·  {STATUS_TEXT[stx]}" if stx in STATUS_TEXT else ""))
+                card = QFrame()
+                card.setObjectName("SeasonCard")
+                card.setStyleSheet(f"QFrame#SeasonCard {{ background: {theme.CARD}; border-radius: 10px; }}")
+                cv = QVBoxLayout(card)
+                cv.setContentsMargins(14, 6, 14, 6)
+                cv.setSpacing(0)
+                head = QHBoxLayout()
+                cb = QCheckBox()
                 cb.setChecked(stx not in (AVAILABLE, PENDING, PROCESSING))
                 if stx in (AVAILABLE, PENDING, PROCESSING):
                     cb.setEnabled(False)
                 else:
                     self.seasons.append((s["number"], cb))
-                cb.setMinimumWidth(240)
-                flow.append(cb)
-            fw = flow_box(flow, 6, 0)
-            v.addWidget(fw)
+                head.addWidget(cb)
+                row = ClickRow()
+                row.setStyleSheet("QFrame#ClickRow { background: transparent; }")
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(4, 6, 4, 6)
+                bits = [s.get("air_date") and _nice_date(s["air_date"]), f"{s['episodes']} ep", STATUS_TEXT.get(stx)]
+                rl.addWidget(label(s["name"], bold=True))
+                rl.addWidget(label("  ·  ".join(b for b in bits if b), "Muted"))
+                rl.addStretch()
+                arrow = label("▾", "Muted")
+                rl.addWidget(arrow)
+                head.addWidget(row, 1)
+                cv.addLayout(head)
+                eps = QWidget()
+                ev = QVBoxLayout(eps)
+                ev.setContentsMargins(0, 4, 0, 10)
+                ev.setSpacing(14)
+                eps.hide()
+                cv.addWidget(eps)
+                row.clicked.connect(lambda n=s["number"], e=eps, ev=ev, a=arrow: self._toggle_season(n, e, ev, a))
+                v.addWidget(card)
             self.body.addWidget(box)
 
         # Cast right under the title (cards with photos)
@@ -1072,6 +1096,51 @@ class TitlePage(ScrollPage):
         if recs:
             self.body.addWidget(cards_row(self.ctx, "More like this", recs[:20]))
         self.body.addStretch()
+
+    def _toggle_season(self, n, eps, ev, arrow):
+        if eps.isVisible():
+            eps.hide()
+            arrow.setText("▾")
+            return
+        eps.show()
+        arrow.setText("▴")
+        if ev.count():
+            return
+        ev.addWidget(loading_widget())
+        sr = self.ctx.seerr()
+        info = self.info
+
+        def got(lst):
+            while ev.count():
+                w = ev.takeAt(0).widget()
+                if w:
+                    w.deleteLater()
+            if not lst:
+                ev.addWidget(label("No episode list yet.", "Muted"))
+            for e in sorted(lst, key=lambda x: -x["number"]):
+                one = QWidget()
+                ol = QVBoxLayout(one)
+                ol.setContentsMargins(0, 0, 0, 0)
+                ol.setSpacing(6)
+                ol.addWidget(label(f"{e['number']} - {e['name']}", size=15, bold=True))
+                pill = label(_nice_date(e["air_date"]) if e["air_date"] else "Date not announced")
+                pill.setStyleSheet("background: #2c2c36; border-radius: 9px; padding: 3px 10px; font-weight: 600;")
+                ol.addWidget(pill, 0, Qt.AlignLeft)
+                if e.get("overview"):
+                    ol.addWidget(label(e["overview"], "Muted", wrap=True))
+                if e.get("still"):
+                    img = ImageBox(400, 225, 10)
+                    img.set_url(e["still"])
+                    ol.addWidget(img, 0, Qt.AlignLeft)
+                ev.addWidget(one)
+
+        def failed(err):
+            while ev.count():
+                w = ev.takeAt(0).widget()
+                if w:
+                    w.deleteLater()
+            ev.addWidget(label("Couldn't load the episodes.", "Muted"))
+        run_bg(lambda: sr.season_episodes(info["id"], n), got, failed)
 
     def _request(self, seasons):
         sr = self.ctx.seerr()
