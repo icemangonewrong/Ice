@@ -3,7 +3,7 @@
  * streaming (the video passes through untouched; only the sound is converted when the browser can't play it).
  * Subtitles off, English audio, 10-second skips, progress reported to Plex like the other Ice apps. */
 "use strict";
-const WEB_VERSION = 3;
+const WEB_VERSION = 4;
 
 const $ = (s, el = document) => el.querySelector(s);
 const view = $("#view");
@@ -369,7 +369,9 @@ const video = $("#video"), player = $("#player");
 function now() { return P.base + (video.currentTime || 0); }
 
 function streamURL(it, at) {
-  P.session = "ice-" + Math.random().toString(36).slice(2);
+  // One Plex session for the whole video: a restart (seek, reconnect) reuses it, so Plex replaces the old
+  // stream instead of starting another one alongside it.
+  if (!P.session) P.session = "ice-" + Math.random().toString(36).slice(2);
   // Direct-stream the video (no video conversion on the server), convert only the sound if needed, no subtitles.
   return server.base + "/video/:/transcode/universal/start.m3u8?" + qs({
     path: "/library/metadata/" + it.ratingKey, mediaIndex: 0, partIndex: 0, protocol: "hls", offset: Math.floor(at),
@@ -400,7 +402,9 @@ async function play(key, from) {
   let it;
   try { it = items(await api(`/library/metadata/${key}`))[0]; } catch {}
   if (!it) { setMsg("Couldn't load this video."); return; }
-  P.item = it; P.dur = (it.duration || 0) / 1000; P.scrobbled = false; P.next = null;
+  if (P.session) stopSession();      // anything left from the previous video
+  P.session = "";
+  P.item = it; P.dur = (it.duration || 0) / 1000; P.scrobbled = false; P.next = null; P.lastRestart = 0;
   $("#ptitle").textContent = it.type === "episode" ? `${it.grandparentTitle} · ${epCode(it)} · ${it.title}` : it.title;
   if (location.hash.startsWith("#/play/")) history.replaceState(null, "", "#/item/" + (it.grandparentRatingKey || key));
   await englishAudio(it);
@@ -410,6 +414,7 @@ async function play(key, from) {
 }
 
 function start(at) {
+  P.lastRestart = Date.now();
   P.base = at;
   video.src = streamURL(P.item, at);
   video.play().catch(() => { setPlayIcon(); });
@@ -432,6 +437,7 @@ function closePlayer() {
   if (!P.item) return showPlayer(false);
   report("stopped", true);
   stopSession();
+  P.session = "";
   video.pause(); video.removeAttribute("src"); video.load();
   P.item = null;
   showPlayer(false);
@@ -456,7 +462,7 @@ function seekTo(t) {
   const rel = t - P.base;
   const s = video.seekable;
   if (rel >= 0 && s.length && rel <= s.end(s.length - 1) - 1) video.currentTime = rel;
-  else { stopSession(); start(t); }     // outside what the server has made so far: restart the stream there
+  else start(t);     // outside what the server has made so far: restart the stream there (same session)
   poke();
 }
 
@@ -493,7 +499,8 @@ video.addEventListener("error", () => {
   if (!P.item) return;
   setMsg("Connection hiccup — picking up where it stopped…");
   const at = now();
-  setTimeout(() => { if (P.item) { stopSession(); start(at); } }, 3000);
+  if (Date.now() - P.lastRestart < 20000) return;   // just restarted: give it time
+  setTimeout(() => { if (P.item) start(at); }, 3000);
 });
 // Stalled while it should be playing (connection dropped and came back): restart at the same spot.
 setInterval(() => {
@@ -501,8 +508,9 @@ setInterval(() => {
   const t = now();
   if (P.lastT != null && Math.abs(t - P.lastT) < 0.05) {
     P.stuck = (P.stuck || 0) + 1;
-    if (P.stuck === 15) { setMsg("Reconnecting…"); stopSession(); start(t); }
-    if (P.stuck > 45) P.stuck = 0;
+    if (P.stuck >= 20 && video.readyState >= 1 && Date.now() - P.lastRestart > 60000) {
+      setMsg("Reconnecting…"); P.stuck = 0; start(t);
+    }
   } else { P.stuck = 0; }
   P.lastT = t;
 }, 1000);
@@ -511,7 +519,7 @@ $("#pplay").onclick = (e) => { e.stopPropagation(); video.paused ? video.play() 
 $("#pback").onclick = (e) => { e.stopPropagation(); seekTo(now() - 10); };
 $("#pfwd").onclick = (e) => { e.stopPropagation(); seekTo(now() + 10); };
 $("#pclose").onclick = (e) => { e.stopPropagation(); closePlayer(); };
-$("#pnext").onclick = (e) => { e.stopPropagation(); if (P.next) { report("stopped", true); stopSession(); play(P.next.ratingKey, 0); } };
+$("#pnext").onclick = (e) => { e.stopPropagation(); if (P.next) { report("stopped", true); play(P.next.ratingKey, 0); } };
 $("#pbar").addEventListener("input", () => { P.dragging = true; $("#pcur").textContent = clock($("#pbar").value / 1000 * P.dur); poke(); });
 $("#pbar").addEventListener("change", () => { P.dragging = false; seekTo($("#pbar").value / 1000 * P.dur); });
 player.addEventListener("click", (e) => {
@@ -552,5 +560,5 @@ function route() {
   location.hash = "#/home";
 }
 addEventListener("hashchange", () => { if (!player.hidden && P.item && !location.hash.startsWith("#/play")) closePlayerQuietly(); route(); });
-function closePlayerQuietly() { report("stopped", true); stopSession(); video.pause(); video.removeAttribute("src"); video.load(); P.item = null; showPlayer(false); }
+function closePlayerQuietly() { report("stopped", true); stopSession(); P.session = ""; video.pause(); video.removeAttribute("src"); video.load(); P.item = null; showPlayer(false); }
 route();
