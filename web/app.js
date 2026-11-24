@@ -3,6 +3,7 @@
  * streaming (the video passes through untouched; only the sound is converted when the browser can't play it).
  * Subtitles off, English audio, 10-second skips, progress reported to Plex like the other Ice apps. */
 "use strict";
+const WEB_VERSION = 3;
 
 const $ = (s, el = document) => el.querySelector(s);
 const view = $("#view");
@@ -265,7 +266,7 @@ function settings() {
     <div class="box"><p><b>Text size</b></p><div class="sizes bar" style="padding:0"></div></div>
     <div class="box"><p><b>Libraries</b></p><p class="muted">Tick the ones to show on Home and in Libraries.</p><div class="libs"></div></div>
     <div class="box"><p><b>Playback</b></p><p class="muted">Subtitles start off and audio in English. The video plays as-is; only the sound is converted when this browser can't play it.</p></div>
-    <div class="box"><p><button class="pill" id="out">Sign out</button></p></div></div>`);
+    <div class="box"><p><button class="pill" id="out">Sign out</button></p><p class="muted">Ice web version ${WEB_VERSION}</p></div></div>`);
   $(".srv", page).textContent = server ? server.name : "";
   $(".addr", page).textContent = server ? server.base.replace(/^https?:\/\//, "").replace(/\..*plex\.direct/, " (plex.direct)") : "";
   const cur = store.get("zoom", innerWidth >= 900 ? 1.5 : 1);
