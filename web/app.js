@@ -62,6 +62,18 @@ async function pickAddress(uris, tok) {
   return i >= 0 ? uris[i] : null;
 }
 
+// Libraries you've switched off in Settings (old/legacy ones) stay out of Home and Libraries.
+function hiddenLibs() { return store.get("hiddenLibs", []); }
+function shownLibs(dirs) { const h = hiddenLibs(); return dirs.filter((d) => (d.type === "movie" || d.type === "show") && !h.includes(String(d.key))); }
+
+// Text size: car screens are wide, so the page starts bigger there; Settings has buttons to change it.
+const SIZES = [["Small", 1], ["Medium", 1.25], ["Large", 1.5], ["Huge", 1.85]];
+function applySize() {
+  const z = store.get("zoom", innerWidth >= 900 ? 1.5 : 1);
+  document.documentElement.style.zoom = z;
+}
+applySize();
+
 function img(path, w, h) {
   if (!path || !server) return "";
   return server.base + "/photo/:/transcode?" + qs({ width: w, height: h, minSize: 1, upscale: 1, url: path, "X-Plex-Token": server.token });
@@ -162,7 +174,7 @@ async function home() {
     ]);
     const cont = cw.MediaContainer.Hub ? (cw.MediaContainer.Hub[0] || {}).Metadata || [] : items(cw);
     if (cont.length) out.appendChild(rowSection("Continue Watching", cont, null, false));
-    const libs = (secs.MediaContainer.Directory || []).filter((d) => d.type === "movie" || d.type === "show");
+    const libs = shownLibs(secs.MediaContainer.Directory || []);
     const rows = await Promise.all(libs.map((d) => api(`/library/sections/${d.key}/recentlyAdded`, { "X-Plex-Container-Start": 0, "X-Plex-Container-Size": 20 }).then(items, () => [])));
     libs.forEach((d, i) => { if (rows[i].length) out.appendChild(rowSection(`Recently Added · ${d.title}`, rows[i], `#/lib/${d.key}/${d.type}/recent`)); });
     view.replaceChildren(out);
@@ -177,7 +189,7 @@ async function libraries() {
   try {
     const d = await api("/library/sections");
     const l = el(`<div><h2>Libraries</h2><div class="list"></div></div>`);
-    (d.MediaContainer.Directory || []).filter((x) => x.type === "movie" || x.type === "show")
+    shownLibs(d.MediaContainer.Directory || [])
       .forEach((x) => $(".list", l).appendChild(el(`<a href="#/lib/${x.key}/${x.type}">${esc(x.title)}</a>`)));
     view.replaceChildren(l);
   } catch { view.replaceChildren(msg("Couldn't load your libraries.")); }
@@ -250,10 +262,34 @@ function settings() {
   const page = el(`<div>
     <div class="box"><p><b>Server</b></p><p class="muted srv"></p><p class="muted addr"></p>
       <p><button class="pill" id="sw">Switch server</button></p></div>
+    <div class="box"><p><b>Text size</b></p><div class="sizes bar" style="padding:0"></div></div>
+    <div class="box"><p><b>Libraries</b></p><p class="muted">Tick the ones to show on Home and in Libraries.</p><div class="libs"></div></div>
     <div class="box"><p><b>Playback</b></p><p class="muted">Subtitles start off and audio in English. The video plays as-is; only the sound is converted when this browser can't play it.</p></div>
     <div class="box"><p><button class="pill" id="out">Sign out</button></p></div></div>`);
   $(".srv", page).textContent = server ? server.name : "";
   $(".addr", page).textContent = server ? server.base.replace(/^https?:\/\//, "").replace(/\..*plex\.direct/, " (plex.direct)") : "";
+  const cur = store.get("zoom", innerWidth >= 900 ? 1.5 : 1);
+  SIZES.forEach(([n, z]) => {
+    const b = el(`<button class="pill">${n}</button>`);
+    if (Math.abs(z - cur) < 0.01) b.style.cssText = "background:var(--ice);color:#000";
+    b.onclick = () => { store.set("zoom", z); applySize(); settings(); };
+    $(".sizes", page).appendChild(b);
+  });
+  api("/library/sections").then((d) => {
+    const hidden = hiddenLibs();
+    (d.MediaContainer.Directory || []).filter((x) => x.type === "movie" || x.type === "show").forEach((x) => {
+      const row = el(`<label class="check-row"><input type="checkbox"> <span></span></label>`);
+      $("span", row).textContent = x.title;
+      const cb = $("input", row);
+      cb.checked = !hidden.includes(String(x.key));
+      cb.onchange = () => {
+        const h = hiddenLibs().filter((k) => k !== String(x.key));
+        if (!cb.checked) h.push(String(x.key));
+        store.set("hiddenLibs", h);
+      };
+      $(".libs", page).appendChild(row);
+    });
+  }).catch(() => {});
   $("#sw", page).onclick = () => { location.hash = "#/signin"; chooseServer(); };
   $("#out", page).onclick = () => { store.del("token"); store.del("server"); token = ""; server = null; showServer(); location.hash = "#/signin"; };
   view.replaceChildren(page);

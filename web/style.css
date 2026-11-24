@@ -100,3 +100,7 @@ input[type=search] { width: 100%; font-size: 18px; }
 #pnext { white-space: nowrap; background: var(--ice); color: #000; flex: 0 0 auto; }
 #pmsg { position: absolute; left: 50%; top: 22%; transform: translateX(-50%); background: rgba(0,0,0,.75);
   padding: 10px 16px; border-radius: 12px; text-align: center; max-width: 80%; }
+
+.check-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid #26262e; font-size: 18px; }
+.check-row input { width: 26px; height: 26px; accent-color: var(--ice); }
+.sizes .pill { font-size: 16px; padding: 10px 16px; }
