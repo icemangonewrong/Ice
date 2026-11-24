@@ -2,6 +2,8 @@ name: Build Ice for Windows
 
 on:
   push:
+    paths-ignore:
+      - 'web/**'
   workflow_dispatch:
 
 permissions:

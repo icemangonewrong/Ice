@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<title>Ice</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+  <button id="back" class="icon" aria-label="Back" hidden>‹</button>
+  <span id="server" class="muted"></span>
+</header>
+<main id="view"></main>
+<nav id="tabs">
+  <a href="#/home" data-tab="home">Home</a>
+  <a href="#/libraries" data-tab="libraries">Libraries</a>
+  <a href="#/search" data-tab="search">Search</a>
+  <a href="#/settings" data-tab="settings">Settings</a>
+</nav>
+
+<div id="player" hidden>
+  <video id="video" playsinline webkit-playsinline preload="auto"></video>
+  <div id="spinner" class="spin" hidden></div>
+  <div id="controls">
+    <div class="ptop">
+      <button id="pclose" class="icon big" aria-label="Close">✕</button>
+      <div id="ptitle"></div>
+      <button id="pnext" class="pill" hidden>Next episode ›</button>
+    </div>
+    <div class="pmid">
+      <button id="pback" class="icon big" aria-label="Back 10 seconds">↺<small>10</small></button>
+      <button id="pplay" class="icon huge" aria-label="Play or pause">▶</button>
+      <button id="pfwd" class="icon big" aria-label="Forward 10 seconds">↻<small>10</small></button>
+    </div>
+    <div class="pbottom">
+      <span id="pcur">0:00</span>
+      <input id="pbar" type="range" min="0" max="1000" value="0">
+      <span id="pleft">0:00</span>
+    </div>
+  </div>
+  <div id="pmsg" hidden></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
