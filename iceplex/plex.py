@@ -533,6 +533,41 @@ class PlexClient:
             return None
         return s["baseURL"] + key + "?" + urllib.parse.urlencode({"X-Plex-Token": s["accessToken"]})
 
+    def fetch_subtitle(self, key: str, tries: int = 4) -> Optional[str]:
+        """Downloads a subtitle file to the cache and returns its path (None if it can't be had).
+        Plex's first answer for a subtitle it just downloaded can come back broken (it sends
+        Content-Length twice and nginx turns that into a 502), so a failed try waits and asks again."""
+        import time
+        from pathlib import Path
+        from .config import cache_dir
+        if not self.server or not key:
+            return None
+        folder = Path(cache_dir()) / "subtitles"
+        folder.mkdir(parents=True, exist_ok=True)
+        last = ""
+        for n in range(1, tries + 1):
+            try:
+                r = self._server_req("GET", key, timeout=20)
+                data = r.content
+                if data:
+                    ctype = (r.headers.get("Content-Type") or "").lower()
+                    head = data[:400].lstrip().lower()
+                    ext = ("ass" if b"[script info]" in head else
+                           "vtt" if head.startswith(b"webvtt") or "vtt" in ctype else
+                           "smi" if b"<sami" in head else "srt")
+                    path = folder / f"{key.strip('/').replace('/', '_')}.{ext}"
+                    path.write_bytes(data)
+                    if n > 1:
+                        print(f"subtitle {key}: got it on try {n} ({last})")
+                    return str(path)
+                last = "empty answer"
+            except Exception as e:  # noqa: BLE001
+                last = str(e)
+            print(f"subtitle {key}: try {n} failed ({last})")
+            if n < tries:
+                time.sleep(1.5 * n)
+        return None
+
     def search(self, text: str) -> list[Item]:
         hubs = self._hubs(self.get("/hubs/search", params={"query": text, "limit": 20}))
         return [Item(m) for h in hubs if h.get("type") in ("movie", "show", "episode")

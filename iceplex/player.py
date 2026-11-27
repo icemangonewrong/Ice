@@ -1044,15 +1044,27 @@ class PlayerPage(QWidget):
         if not self.file_loaded or not self.has_played or not self.pending_subs:
             return
         subs, self.pending_subs = self.pending_subs, []
-        for s in subs:
-            url = self.ctx.client.stream_url(s["key"])
-            if not url:
-                continue
-            try:
-                # "auto" = add it to the menu without switching to it; "select" if you picked it in Plex
-                self.video.mpv.command_async("sub-add", url, "auto", s["title"], s["lang"])
-            except Exception as e:  # noqa: BLE001
-                print("sub-add failed:", e)
+        item = self.item
+        client = self.ctx.client
+
+        def fetch():
+            # Fetched here (with retries) and handed to mpv as a local file: Plex's first answer for a
+            # freshly downloaded subtitle can be broken, and mpv gives up on the first error.
+            return [(s, client.fetch_subtitle(s["key"]) or client.stream_url(s["key"])) for s in subs]
+
+        def done(found):
+            if self.item is not item:
+                return
+            for s, where in found:
+                if not where:
+                    continue
+                try:
+                    # "auto" = add it to the menu without switching to it
+                    self.video.mpv.command_async("sub-add", where, "auto", s["title"], s["lang"])
+                except Exception as e:  # noqa: BLE001
+                    print("sub-add failed:", e)
+
+        run_bg(fetch, done, lambda e: print("subtitles:", e))
 
     def _configure_cache(self, item: Item):
         minutes = int(self.ctx.settings["bufferMinutes"] or 2)
@@ -1550,19 +1562,23 @@ class PlayerPage(QWidget):
                     continue
                 new = [s for s in full.external_subtitles() if s["key"] not in before]
                 if new:
-                    return new[-1]
+                    sub = new[-1]
+                    return sub, self.ctx.client.fetch_subtitle(sub["key"])
             return None
 
-        def done(sub):
+        def done(got):
             if not self.item or self.item.key != key:
                 return
-            if not sub:
+            if not got:
                 self._toast("The server didn't get those subtitles. Try another one.")
                 return
-            url = self.ctx.client.stream_url(sub["key"])
+            sub, path = got
+            if not path:
+                self._toast("The server has them but won't send them right now. Try again in a moment.")
+                return
             self._user_picked_sub = True
             try:
-                self.video.mpv.command_async("sub-add", url, "select", r.get("title") or sub["title"], sub["lang"])
+                self.video.mpv.command_async("sub-add", path, "select", r.get("title") or sub["title"], sub["lang"])
                 self.video.mpv["sub-visibility"] = True
                 self._toast(f"Subtitles: {r.get('title') or sub['title']}")
             except Exception as e:  # noqa: BLE001
